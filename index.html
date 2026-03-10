@@ -1,0 +1,658 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Hotel Power Monitor</title>
+  <script src="https://cdn.socket.io/4.5.4/socket.io.min.js"></script>
+  <style>
+    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
+
+    * { 
+      box-sizing: border-box; 
+      margin: 0;
+      padding: 0;
+    }
+
+    body {
+      font-family: "Inter", sans-serif;
+      background: linear-gradient(135deg, #0f172a 0%, #1e293b 50%, #334155 100%);
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: flex-start;
+      padding: 20px;
+      color: #fff;
+      position: relative;
+      overflow: auto;
+    }
+
+    body::before {
+      content: '';
+      position: absolute;
+      top: 0;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      background: radial-gradient(circle at 20% 50%, rgba(59, 130, 246, 0.1) 0%, transparent 50%),
+                  radial-gradient(circle at 80% 80%, rgba(168, 85, 247, 0.1) 0%, transparent 50%);
+      pointer-events: none;
+    }
+
+    .container {
+      width: 100%;
+      max-width: 1400px;
+      position: relative;
+      z-index: 1;
+      display: flex;
+      flex-direction: column;
+      min-height: 100vh;
+    }
+
+    header {
+      text-align: center;
+      margin-bottom: 20px;
+      animation: fadeInDown 0.8s ease-out;
+    }
+
+    h1 {
+      font-size: 42px;
+      font-weight: 700;
+      background: linear-gradient(135deg, #60a5fa, #a78bfa, #ec4899);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      background-clip: text;
+      margin-bottom: 8px;
+      letter-spacing: -0.5px;
+    }
+
+    .subtitle {
+      font-size: 16px;
+      color: #94a3b8;
+      font-weight: 400;
+    }
+
+    .stats-bar {
+      display: flex;
+      gap: 15px;
+      justify-content: center;
+      margin-bottom: 20px;
+      animation: fadeIn 1s ease-out;
+      flex-wrap: wrap;
+    }
+
+    .stat-card {
+      background: rgba(255, 255, 255, 0.05);
+      backdrop-filter: blur(10px);
+      border: 1px solid rgba(255, 255, 255, 0.1);
+      border-radius: 16px;
+      padding: 15px 25px;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 6px;
+      transition: all 0.3s ease;
+    }
+
+    .stat-card:hover {
+      transform: translateY(-3px);
+      box-shadow: 0 10px 30px rgba(0, 0, 0, 0.3);
+    }
+
+    .stat-label {
+      font-size: 12px;
+      color: #94a3b8;
+      text-transform: uppercase;
+      letter-spacing: 1px;
+    }
+
+    .stat-value {
+      font-size: 28px;
+      font-weight: 700;
+    }
+
+    .stat-value.green { color: #22c55e; }
+    .stat-value.yellow { color: #eab308; }
+    .stat-value.blue { color: #3b82f6; }
+    .stat-value.purple { color: #a855f7; }
+    .stat-value.orange { color: #f97316; }
+
+    .table-container {
+      background: rgba(255, 255, 255, 0.03);
+      backdrop-filter: blur(20px);
+      border: 1px solid rgba(255, 255, 255, 0.1);
+      border-radius: 24px;
+      padding: 30px;
+      box-shadow: 0 20px 60px rgba(0, 0, 0, 0.4);
+      animation: fadeInUp 1s ease-out;
+      flex: 1;
+      overflow-x: auto;
+      overflow-y: auto;
+    }
+
+    .rooms-grid {
+      display: grid;
+      grid-template-columns: 70px repeat(6, minmax(100px, 1fr));
+      gap: 15px;
+      width: 100%;
+      max-width: 900px;
+      margin: 0 auto;
+    }
+
+    .floor-label {
+      background: linear-gradient(135deg, #3b82f6, #2563eb);
+      color: white;
+      font-size: 18px;
+      font-weight: 600;
+      padding: 14px;
+      border-radius: 12px;
+      text-align: center;
+      box-shadow: 0 4px 12px rgba(59, 130, 246, 0.3);
+      overflow: hidden;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      min-width: 70px;
+      width: 70px;
+    }
+
+    .room-cell {
+      aspect-ratio: 1;
+      border-radius: 16px;
+      text-align: center;
+      font-size: 18px;
+      font-weight: 600;
+      transition: all 0.4s cubic-bezier(0.4, 0, 0.2, 1);
+      cursor: pointer;
+      position: relative;
+      overflow: hidden;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      min-height: 100px;
+      padding: 12px 8px;
+      color: white;
+    }
+    
+    .room-number {
+      font-size: 22px;
+      font-weight: 700;
+      z-index: 2;
+      margin-bottom: 4px;
+    }
+    
+    .room-state-name {
+      font-size: 11px;
+      font-weight: 500;
+      z-index: 2;
+      opacity: 0.9;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+
+    .room-cell::before {
+      content: '';
+      position: absolute;
+      top: 0;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      background: linear-gradient(135deg, rgba(255,255,255,0.1), transparent);
+      opacity: 0;
+      transition: opacity 0.3s ease;
+    }
+
+    .room-cell:hover::before {
+      opacity: 1;
+    }
+
+    /* State Colors - Based on Backend State Logic */
+    .room-state-0 {
+      background: linear-gradient(135deg, #22c55e, #16a34a);
+      box-shadow: 0 4px 20px rgba(34, 197, 94, 0.3);
+    }
+
+    .room-state-1 {
+      background: linear-gradient(135deg, #eab308, #ca8a04);
+      box-shadow: 0 4px 20px rgba(234, 179, 8, 0.3);
+    }
+
+    .room-state-2 {
+      background: linear-gradient(135deg, #3b82f6, #2563eb);
+      box-shadow: 0 4px 20px rgba(59, 130, 246, 0.3);
+    }
+
+    .room-state-3 {
+      background: linear-gradient(135deg, #a855f7, #9333ea);
+      box-shadow: 0 4px 20px rgba(168, 85, 247, 0.3);
+      animation: glowPurple 2s infinite;
+    }
+
+    .room-state-4 {
+      background: linear-gradient(135deg, #f97316, #ea580c);
+      box-shadow: 0 4px 20px rgba(249, 115, 22, 0.3);
+    }
+
+    .room-state-unknown {
+      background: linear-gradient(135deg, #6b7280, #4b5563);
+      box-shadow: 0 4px 20px rgba(107, 114, 128, 0.3);
+    }
+
+    .room-cell:hover {
+      transform: scale(1.08) translateY(-4px);
+    }
+
+    footer {
+      margin-top: 20px;
+      text-align: center;
+      animation: fadeIn 1.2s ease-out;
+    }
+
+    .status-indicator {
+      display: inline-flex;
+      align-items: center;
+      gap: 12px;
+      background: rgba(255, 255, 255, 0.05);
+      backdrop-filter: blur(10px);
+      border: 1px solid rgba(255, 255, 255, 0.1);
+      border-radius: 50px;
+      padding: 10px 20px;
+      font-size: 14px;
+      color: #94a3b8;
+    }
+
+    .status-dot {
+      width: 10px;
+      height: 10px;
+      border-radius: 50%;
+      background: #10b981;
+      animation: pulse 2s infinite;
+    }
+
+    .status-dot.disconnected {
+      background: #ef4444;
+    }
+
+    .legend {
+      display: flex;
+      gap: 20px;
+      justify-content: center;
+      margin-top: 15px;
+      flex-wrap: wrap;
+    }
+
+    .legend-item {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 13px;
+      color: #94a3b8;
+    }
+
+    .legend-box {
+      width: 25px;
+      height: 25px;
+      border-radius: 8px;
+    }
+
+    .legend-box.state-0 { background: linear-gradient(135deg, #22c55e, #16a34a); }
+    .legend-box.state-1 { background: linear-gradient(135deg, #eab308, #ca8a04); }
+    .legend-box.state-2 { background: linear-gradient(135deg, #3b82f6, #2563eb); }
+    .legend-box.state-3 { background: linear-gradient(135deg, #a855f7, #9333ea); }
+    .legend-box.state-4 { background: linear-gradient(135deg, #f97316, #ea580c); }
+
+    /* Notification System */
+    .notification-container {
+      position: fixed;
+      top: 20px;
+      right: 20px;
+      z-index: 1000;
+      pointer-events: none;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      max-width: 350px;
+    }
+
+    .notification {
+      background: rgba(255, 255, 255, 0.95);
+      backdrop-filter: blur(10px);
+      border-radius: 12px;
+      padding: 16px 24px;
+      box-shadow: 0 8px 24px rgba(0, 0, 0, 0.3);
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      min-width: 300px;
+      animation: slideInRight 0.5s ease-out;
+      pointer-events: auto;
+      border-left: 4px solid;
+    }
+
+    .notification.state-0 { border-left-color: #22c55e; }
+    .notification.state-1 { border-left-color: #eab308; }
+    .notification.state-2 { border-left-color: #3b82f6; }
+    .notification.state-3 { border-left-color: #a855f7; }
+    .notification.state-4 { border-left-color: #f97316; }
+
+    .notification-icon {
+      width: 40px;
+      height: 40px;
+      border-radius: 50%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 20px;
+      flex-shrink: 0;
+      color: white;
+    }
+
+    .notification.state-0 .notification-icon { background: linear-gradient(135deg, #22c55e, #16a34a); }
+    .notification.state-1 .notification-icon { background: linear-gradient(135deg, #eab308, #ca8a04); }
+    .notification.state-2 .notification-icon { background: linear-gradient(135deg, #3b82f6, #2563eb); }
+    .notification.state-3 .notification-icon { background: linear-gradient(135deg, #a855f7, #9333ea); }
+    .notification.state-4 .notification-icon { background: linear-gradient(135deg, #f97316, #ea580c); }
+
+    .notification-content {
+      flex: 1;
+    }
+
+    .notification-room {
+      font-size: 18px;
+      font-weight: 700;
+      color: #1e293b;
+      margin-bottom: 2px;
+    }
+
+    .notification-status {
+      font-size: 14px;
+      color: #64748b;
+    }
+
+    @keyframes fadeInUp {
+      from { opacity: 0; transform: translateY(30px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+
+    @keyframes fadeInDown {
+      from { opacity: 0; transform: translateY(-30px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+
+    @keyframes fadeIn {
+      from { opacity: 0; }
+      to { opacity: 1; }
+    }
+
+    @keyframes pulse {
+      0%, 100% { opacity: 1; transform: scale(1); }
+      50% { opacity: 0.5; transform: scale(1.1); }
+    }
+
+    @keyframes glowPurple {
+      0%, 100% { box-shadow: 0 4px 20px rgba(168, 85, 247, 0.3); }
+      50% { box-shadow: 0 4px 30px rgba(168, 85, 247, 0.6); }
+    }
+
+    @keyframes slideInRight {
+      from { transform: translateX(400px); opacity: 0; }
+      to { transform: translateX(0); opacity: 1; }
+    }
+
+    @keyframes fadeOut {
+      from { opacity: 1; }
+      to { opacity: 0; transform: translateX(400px); }
+    }
+  </style>
+</head>
+<body>
+  <div class="notification-container" id="notificationContainer"></div>
+  
+  <div class="container">
+    <header>
+      <h1>Hotel Power Monitor</h1>
+      <p class="subtitle">Real-time room status monitoring - 6 Floors × 6 Rooms</p>
+    </header>
+
+    <div class="stats-bar">
+      <div class="stat-card">
+        <span class="stat-label">Trống</span>
+        <span class="stat-value green" id="state0Count">0</span>
+      </div>
+      <div class="stat-card">
+        <span class="stat-label">Check-in</span>
+        <span class="stat-value yellow" id="state1Count">0</span>
+      </div>
+      <div class="stat-card">
+        <span class="stat-label">Vào phòng</span>
+        <span class="stat-value blue" id="state2Count">0</span>
+      </div>
+      <div class="stat-card">
+        <span class="stat-label">Dùng thẻ</span>
+        <span class="stat-value purple" id="state3Count">0</span>
+      </div>
+      <div class="stat-card">
+        <span class="stat-label">Dọn dẹp</span>
+        <span class="stat-value orange" id="state4Count">0</span>
+      </div>
+      <div class="stat-card">
+        <span class="stat-label">Total Rooms</span>
+        <span class="stat-value" style="color: #60a5fa;">36</span>
+      </div>
+    </div>
+
+    <div class="table-container">
+      <div class="rooms-grid" id="roomsGrid"></div>
+    </div>
+
+    <footer>
+      <div class="status-indicator">
+        <span class="status-dot" id="statusDot"></span>
+        <span id="lastUpdate">Connecting to server...</span>
+      </div>
+      <div class="legend">
+        <div class="legend-item">
+          <div class="legend-box state-0"></div>
+          <span>Trống (Empty)</span>
+        </div>
+        <div class="legend-item">
+          <div class="legend-box state-1"></div>
+          <span>Check-in</span>
+        </div>
+        <div class="legend-item">
+          <div class="legend-box state-2"></div>
+          <span>Vào phòng (In Room)</span>
+        </div>
+        <div class="legend-item">
+          <div class="legend-box state-3"></div>
+          <span>Dùng thẻ (Card Access)</span>
+        </div>
+        <div class="legend-item">
+          <div class="legend-box state-4"></div>
+          <span>Dọn dẹp (Cleaning)</span>
+        </div>
+      </div>
+    </footer>
+  </div>
+
+  <script>
+    const API_URL = 'http://localhost:3000';
+    const socket = io(API_URL, {
+      reconnection: true,
+      reconnectionDelay: 1000,
+      reconnectionDelayMax: 5000,
+      reconnectionAttempts: 5
+    });
+
+    const roomsGrid = document.getElementById("roomsGrid");
+    const roomCells = {};
+    const roomStates = {};
+    const lastUpdate = document.getElementById("lastUpdate");
+    const statusDot = document.getElementById("statusDot");
+    const notificationContainer = document.getElementById("notificationContainer");
+
+    const stateNames = {
+      0: 'Trống',
+      1: 'Check-in',
+      2: 'Vào phòng',
+      3: 'Dùng thẻ',
+      4: 'Dọn dẹp'
+    };
+
+    const stateIcons = {
+      0: '✓',
+      1: '🏨',
+      2: '👤',
+      3: '💳',
+      4: '🧹'
+    };
+
+    // Tạo grid 6 tầng × 6 phòng
+    for (let floor = 1; floor <= 6; floor++) {
+      const floorLabel = document.createElement("div");
+      floorLabel.className = "floor-label";
+      floorLabel.textContent = `F${floor}`;
+      roomsGrid.appendChild(floorLabel);
+
+      for (let room = 1; room <= 6; room++) {
+        const roomNumber = floor * 100 + room;
+        
+        const cell = document.createElement("div");
+        cell.className = "room-cell room-state-0";
+        
+        const numberDiv = document.createElement("div");
+        numberDiv.className = "room-number";
+        numberDiv.textContent = roomNumber;
+        
+        const stateDiv = document.createElement("div");
+        stateDiv.className = "room-state-name";
+        stateDiv.textContent = stateNames[0];
+        
+        cell.appendChild(numberDiv);
+        cell.appendChild(stateDiv);
+        
+        roomsGrid.appendChild(cell);
+        roomCells[roomNumber] = cell;
+        roomStates[roomNumber] = 0;
+      }
+    }
+
+    // WebSocket: Connection
+    socket.on('connect', () => {
+      console.log('✅ Connected to server');
+      lastUpdate.textContent = 'Connected - Monitoring...';
+      statusDot.classList.remove('disconnected');
+    });
+
+    socket.on('disconnect', () => {
+      console.log('❌ Disconnected from server');
+      lastUpdate.textContent = 'Disconnected from server';
+      statusDot.classList.add('disconnected');
+    });
+
+    socket.on('error', (error) => {
+      console.error('Socket error:', error);
+      lastUpdate.textContent = 'Connection error';
+      statusDot.classList.add('disconnected');
+    });
+
+    // WebSocket: Room State Updates (Every 2 seconds)
+    socket.on('roomStateUpdate', (data) => {
+      const { roomStates: newStates, timestamp } = data;
+      
+      Object.entries(newStates).forEach(([room, state]) => {
+        const roomNum = parseInt(room);
+        if (roomCells[roomNum]) {
+          const oldState = roomStates[roomNum];
+          const newState = state.state;
+
+          // Cập nhật trạng thái
+          if (oldState !== newState) {
+            // Push notification khi có thay đổi
+            showNotification(roomNum, newState, state.stateName);
+            roomStates[roomNum] = newState;
+          }
+
+          // Cập nhật UI
+          const cell = roomCells[roomNum];
+          cell.className = `room-cell room-state-${newState}`;
+          cell.querySelector('.room-state-name').textContent = state.stateName || stateNames[newState] || 'Unknown';
+        }
+      });
+
+      updateStats();
+      
+      const currentTime = new Date(timestamp);
+      lastUpdate.textContent = "Last update: " + currentTime.toLocaleTimeString();
+    });
+
+    // WebSocket: PLC Status Updates
+    socket.on('plcStatus', (data) => {
+      const { statuses } = data;
+      const allConnected = statuses.every(s => s.connected);
+      
+      if (allConnected) {
+        statusDot.classList.remove('disconnected');
+      } else {
+        statusDot.classList.add('disconnected');
+      }
+    });
+
+    // Show notification khi thay đổi trạng thái
+    function showNotification(roomNumber, state, stateName) {
+      const notification = document.createElement("div");
+      notification.className = `notification state-${state}`;
+      
+      const icon = document.createElement("div");
+      icon.className = "notification-icon";
+      icon.textContent = stateIcons[state] || "🏠";
+      
+      const content = document.createElement("div");
+      content.className = "notification-content";
+      
+      const roomDiv = document.createElement("div");
+      roomDiv.className = "notification-room";
+      roomDiv.textContent = `Room ${roomNumber}`;
+      
+      const statusDiv = document.createElement("div");
+      statusDiv.className = "notification-status";
+      statusDiv.textContent = stateName || stateNames[state] || 'Unknown';
+      
+      content.appendChild(roomDiv);
+      content.appendChild(statusDiv);
+      notification.appendChild(icon);
+      notification.appendChild(content);
+      
+      notificationContainer.appendChild(notification);
+      
+      // Tự động xóa sau 3 giây
+      setTimeout(() => {
+        notification.style.animation = 'fadeOut 0.5s ease-in';
+        setTimeout(() => notification.remove(), 500);
+      }, 3000);
+    }
+
+    // Cập nhật thống kê
+    function updateStats() {
+      const counts = { 0: 0, 1: 0, 2: 0, 3: 0, 4: 0 };
+      
+      Object.values(roomStates).forEach(state => {
+        if (counts.hasOwnProperty(state)) {
+          counts[state]++;
+        }
+      });
+      
+      document.getElementById('state0Count').textContent = counts[0];
+      document.getElementById('state1Count').textContent = counts[1];
+      document.getElementById('state2Count').textContent = counts[2];
+      document.getElementById('state3Count').textContent = counts[3];
+      document.getElementById('state4Count').textContent = counts[4];
+    }
+
+    // Initial stats
+    updateStats();
+  </script>
+</body>
+</html>
