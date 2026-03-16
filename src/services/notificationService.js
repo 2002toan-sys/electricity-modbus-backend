@@ -57,7 +57,7 @@ class NotificationService extends EventEmitter {
    */
   async sendNotification(room, previousState, newState, message) {
     try {
-      logger.info(`Notification: Room ${room} - ${message}`);
+      logger.debug(`Notification: Room ${room} - ${message}`);
 
       // Get current coil states for payload
       const stateManager = (await import('./stateManager.js')).default;

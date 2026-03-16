@@ -22,9 +22,9 @@ class CommandQueue {
     this.isPaused = new Map();      // Track if floor queue is paused (waiting for reconnect)
     this.lastReadTime = new Map();  // Track last time we scheduled a read per floor
     this.readTimers = new Map();    // Store timer IDs for cleanup
-    
+
     this.readInterval = config.app?.polling_interval || 500; // 500ms default
-    
+
     this.initializeFloors();
   }
 
@@ -61,7 +61,7 @@ class CommandQueue {
     }
 
     const queue = this.queues.get(floorKey);
-    
+
     // Check: is there already a READ command in queue?
     const hasReadInQueue = queue.some(cmd => cmd.type === 'READ');
     if (hasReadInQueue) {
@@ -117,7 +117,7 @@ class CommandQueue {
 
     const queue = this.queues.get(floorKey);
     queue.unshift(command); // Insert at FRONT for priority
-    
+
     logger.info(`WRITE enqueued at FRONT for floor ${floor}: ${commandType}(${address})=${value} (queue: ${queue.length})`);
 
     this.processQueue(floor);
@@ -158,7 +158,7 @@ class CommandQueue {
           if (connStatus.connected) {
             break; // Connected, proceed
           }
-          
+
           logger.debug(`Floor ${floor}: waiting for TCP (${elapsedTime}ms/${maxWaitTime}ms)`);
           await this.sleep(checkInterval);
           elapsedTime += checkInterval;
@@ -178,32 +178,37 @@ class CommandQueue {
 
         try {
           await this.executeCommand(command);
+          await this.sleep(50)
         } catch (error) {
           logger.error(`Floor ${floor}: ${command.type} error: ${error.message}`);
-          
-          // Check if "Port Not Open" error
-          if (error.message?.includes('Port Not Open')) {
-            logger.warn(`Floor ${floor}: Port not open during ${command.type}, triggering reconnect`);
+
+          // Check if "Port Not Open" or network-related error
+          const errMsg = error.message || '';
+          if (errMsg.toLowerCase().includes('port not open') || 
+              errMsg.toLowerCase().includes('not connected') ||
+              errMsg.toLowerCase().includes('socket destroyed') ||
+              errMsg.toLowerCase().includes('econnreset')) {
+            
+            logger.warn(`Floor ${floor}: Connection error during ${command.type}: ${errMsg}`);
+            
             // Trigger reconnect
-            if (plcManager.clients) {
-              const key = `floor_${floor}`;
-              const entry = plcManager.clients.get(key);
-              if (entry) {
-                entry.connected = false;
-                logger.info(`Floor ${floor}: Triggering immediate reconnect due to port not open`);
-                plcManager.scheduleReconnect(entry.config);
-              }
+            const key = `floor_${floor}`;
+            const entry = plcManager.clients?.get(key);
+            if (entry) {
+              entry.connected = false;
+              logger.info(`Floor ${floor}: Triggering immediate reconnect due to connection error`);
+              plcManager.scheduleReconnect(entry.config);
             }
             this.isPaused.set(floorKey, true); // Mark as paused
             break; // Stop queue, wait for reconnect
           }
-          
+
           // Not "port not open" error, just command failed
           // Callback on error for WRITE
           if (command.type === 'WRITE' && command.callback) {
             command.callback(error);
           }
-          
+
           // Continue with next command
         }
       }
@@ -259,7 +264,7 @@ class CommandQueue {
         for (const [room, mapping] of Object.entries(config.roomMapping || {})) {
           if (mapping.floor === floor) {
             stateManager.updateRoomState(room, d100, d101, mapping);
-            
+
             const yOutputMain = (d101 >> mapping.y_output_main) & 1;
             const yOutputSub = (d101 >> mapping.y_output_sub) & 1;
             stateManager.updateCoilState(room, 'main', !!yOutputMain);
@@ -293,7 +298,7 @@ class CommandQueue {
         throw new Error(`Unknown command type: ${commandType}`);
       }
 
-      logger.info(`WRITE executed floor ${floor}: ${commandType}(${address})=${value}`);
+      logger.debug(`WRITE executed floor ${floor}: ${commandType}(${address})=${value}`);
 
       // Callback on success
       if (callback) {
@@ -303,7 +308,7 @@ class CommandQueue {
       return result;
     } catch (error) {
       logger.error(`WRITE failed for floor ${floor}: ${Error.message}`);
-      
+
       // Callback on error
       if (callback) {
         callback(error);
@@ -320,7 +325,7 @@ class CommandQueue {
    */
   startReadPolling(floor, registerType = 'holding', startAddress = 100, count = 2) {
     const floorKey = this.getFloorKey(floor);
-    
+
     // Don't start if already polling
     if (this.readTimers.has(floorKey)) {
       logger.debug(`Floor ${floor} already has read polling scheduled`);
@@ -332,7 +337,7 @@ class CommandQueue {
     const scheduleRead = () => {
       // Only enqueue if queue doesn't already have a READ
       this.enqueueRead(floor, registerType, startAddress, count);
-      
+
       // Schedule next read
       const timer = setTimeout(scheduleRead, this.readInterval);
       this.readTimers.set(floorKey, timer);
@@ -340,7 +345,7 @@ class CommandQueue {
 
     // Enqueue first read immediately
     this.enqueueRead(floor, registerType, startAddress, count);
-    
+
     // Schedule next read
     const timer = setTimeout(scheduleRead, this.readInterval);
     this.readTimers.set(floorKey, timer);
@@ -352,7 +357,7 @@ class CommandQueue {
   stopReadPolling(floor) {
     const floorKey = this.getFloorKey(floor);
     const timer = this.readTimers.get(floorKey);
-    
+
     if (timer) {
       clearTimeout(timer);
       this.readTimers.delete(floorKey);
@@ -388,7 +393,7 @@ class CommandQueue {
       const floor = parseInt(floorKey.split('_')[1]);
       const connStatus = plcManager.getConnectionStatus(floor);
       const commands = queue.map(cmd => `${cmd.type}(${cmd.address || ''})`).join(', ');
-      
+
       status[floorKey] = {
         floor,
         queueLength: queue.length,

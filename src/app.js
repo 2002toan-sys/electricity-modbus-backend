@@ -71,14 +71,14 @@ notificationService.on('state-change', (notification) => {
 relayEmitter.on('interlockRequired', async (payload) => {
   const { room, mapping } = payload;
   try {
-    logger.info(`Interlock: enqueue sub-OFF for room ${room} (will run after main OFF)`);
+    logger.debug(`Interlock: enqueue sub-OFF for room ${room} (will run after main OFF)`);
 
     // Use relayService.setRelay so the sub-OFF is queued per-floor and runs
     // after the main OFF operation completes. relayService will handle
     // verification, state updates and emitting state changes.
     await relayService.setRelay(room, 'sub', 'off');
 
-    logger.info(`Interlock enqueue complete for room ${room}`);
+    logger.debug(`Interlock enqueue complete for room ${room}`);
   } catch (error) {
     logger.error(`Interlock failed for room ${room}: ${error.message}`);
   }

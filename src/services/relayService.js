@@ -64,7 +64,7 @@ class RelayService {
           stateManager.updateCoilState(room, relayType, value);
           stateManager.saveCoilStates();
 
-          logger.info(`Relay ${relayType} set to ${setValue} for room ${room}`);
+          logger.debug(`Relay ${relayType} set to ${setValue} for room ${room}`);
           
           // Broadcast state update immediately
           monitorService.emitStateUpdate();

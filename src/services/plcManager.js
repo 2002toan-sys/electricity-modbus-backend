@@ -119,6 +119,12 @@ class PLCManager {
       // Attach listeners to detect disconnects
       const socket = this.getSocketFromClient(client);
       if (socket?.on) {
+        // Set TCP Keep-alive to detect dead connections faster
+        if (typeof socket.setKeepAlive === 'function') {
+          socket.setKeepAlive(true, 10000); // 10s idle before sending keep-alive
+          logger.debug(`Enabled TCP keep-alive for Floor ${plcConfig.floor}`);
+        }
+
         socket.on('close', (hadError) => {
           logger.warn(`Floor ${plcConfig.floor} socket closed (hadError=${hadError})`);
           const entry = this.clients.get(key);
@@ -133,6 +139,16 @@ class PLCManager {
             entry.connected = false;
             entry.lastError = err.message;
           }
+          this.scheduleReconnect(plcConfig);
+        });
+      }
+
+      // Also listen on client for higher-level errors
+      if (client.on) {
+        client.on('error', (err) => {
+          logger.error(`Floor ${plcConfig.floor} Modbus client error: ${err.message}`);
+          const entry = this.clients.get(key);
+          if (entry) entry.connected = false;
           this.scheduleReconnect(plcConfig);
         });
       }
@@ -188,8 +204,18 @@ class PLCManager {
     const key = `floor_${floor}`;
     const entry = this.clients.get(key);
     
-    if (!entry?.connected) {
-      throw new Error(`Floor ${floor} not connected`);
+    if (!entry?.client) {
+      throw new Error(`Floor ${floor} not initialized`);
+    }
+
+    // Check high-level open status
+    if (!entry.client.isOpen) {
+      entry.connected = false;
+      throw new Error(`Floor ${floor} port not open`);
+    }
+
+    if (!entry.connected) {
+      throw new Error(`Floor ${floor} marked as disconnected`);
     }
 
     const socket = this.getSocketFromClient(entry.client);
@@ -209,10 +235,8 @@ class PLCManager {
     try {
       const client = this.getClient(floor);
       await client.writeCoil(coilAddress, value);
-      logger.info(`Write coil success: Floor ${floor}, Coil ${coilAddress}, Value ${value}`);
       return true;
     } catch (error) {
-      logger.error(`Write coil error: Floor ${floor}, Coil ${coilAddress}: ${error.message}`);
       throw error;
     }
   }
@@ -227,7 +251,6 @@ class PLCManager {
       const result = await client.readCoils(coilAddress, 1);
       return result.data[0];
     } catch (error) {
-      logger.error(`Read coil error: Floor ${floor}, Coil ${coilAddress}: ${error.message}`);
       throw error;
     }
   }
@@ -242,7 +265,6 @@ class PLCManager {
       const result = await client.readCoils(startAddress, count);
       return result.data;
     } catch (error) {
-      logger.error(`Read coils error: Floor ${floor}, Address ${startAddress}: ${error.message}`);
       throw error;
     }
   }
@@ -255,10 +277,8 @@ class PLCManager {
     try {
       const client = this.getClient(floor);
       await client.writeRegister(registerAddress, value);
-      logger.info(`Write register success: Floor ${floor}, Register ${registerAddress}, Value ${value}`);
       return true;
     } catch (error) {
-      logger.error(`Write register error: Floor ${floor}, Register ${registerAddress}: ${error.message}`);
       throw error;
     }
   }
@@ -273,7 +293,7 @@ class PLCManager {
       const result = await client.readHoldingRegisters(startAddress, count);
       return result.data;
     } catch (error) {
-      logger.error(`Read registers error: Floor ${floor}, Address ${startAddress}: ${error.message}`);
+     
       throw error;
     }
   }

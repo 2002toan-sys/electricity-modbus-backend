@@ -1,0 +1,35 @@
+version: '3.8'
+
+services:
+  modbus-backend:
+    # Image name on Docker Hub
+    image: nguyenvietanh10326/hotel-modbus-backend:latest
+    
+    # Allows local building using the Dockerfile in this directory
+    build:
+      context: .
+      dockerfile: Dockerfile
+
+    container_name: modbus_backend_app
+    
+    # Restart policy for production
+    restart: unless-stopped
+    
+    ports:
+      # Host port : Container port
+      - "3000:3000"
+    
+    # Persistent storage for data, config, and logs
+    volumes:
+      - ./data:/app/data
+      - ./logs:/app/logs
+      # Optional: mount config source if needed for runtime changes
+      # - ./src/config:/app/src/config
+    
+    # Load environment variables from .env file
+    env_file:
+      - .env
+    
+    # Environment variable overrides (if any)
+    environment:
+      - NODE_ENV=production
