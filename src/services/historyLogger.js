@@ -1,4 +1,4 @@
-import { appendFileSync, readFileSync, existsSync, mkdirSync } from 'fs';
+import { appendFileSync, readFileSync, existsSync, mkdirSync, statSync, openSync, readSync, closeSync } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import logger from '../utils/logger.js';
@@ -50,7 +50,7 @@ class HistoryLogger {
   }
 
   /**
-   * Get history for a room (or all rooms if room is null)
+   * Get history for a room (efficiently reads from tail)
    */
   getHistory(room = null, limit = 100) {
     try {
@@ -58,11 +58,23 @@ class HistoryLogger {
         return [];
       }
 
-      const data = readFileSync(this.historyFile, 'utf8');
-      const lines = data.trim().split('\n');
+      // Read the last ~1MB of the file (should be plenty for 100-1000 records)
+      const stats = statSync(this.historyFile);
+      const fileSize = stats.size;
+      const bufferSize = Math.min(fileSize, 1024 * 1024); // 1MB buffer
+      const buffer = Buffer.alloc(bufferSize);
       
-      // Skip header
-      const records = lines.slice(1).map(line => {
+      const fd = openSync(this.historyFile, 'r');
+      readSync(fd, buffer, 0, bufferSize, Math.max(0, fileSize - bufferSize));
+      closeSync(fd);
+
+      const content = buffer.toString('utf8');
+      const lines = content.split('\n').filter(l => l.trim() !== '');
+      
+      // Since we read the tail, the first line might be partial
+      const fullLines = lines.slice(1);
+      
+      const records = fullLines.map(line => {
         const match = line.match(/^(.+?),"(.+?)","(.+?)","(.+?)","(.+?)","(.*)"/);
         if (!match) return null;
         
@@ -76,13 +88,11 @@ class HistoryLogger {
         };
       }).filter(record => record !== null);
 
-      // Filter by room if specified
       let filtered = records;
       if (room) {
         filtered = records.filter(r => r.room === room);
       }
 
-      // Return latest N records
       return filtered.slice(-limit).reverse();
     } catch (error) {
       logger.error(`Failed to read history: ${error.message}`);

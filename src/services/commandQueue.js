@@ -104,7 +104,7 @@ class CommandQueue {
         const command = queue.shift();
         try {
           await this._execute(command);
-          await this._sleep(50);
+
         } catch (error) {
           logger.error(`Floor ${floor}: ${command.type} error: ${error.message}`);
 
@@ -160,22 +160,21 @@ class CommandQueue {
         result = await plcManager.readCoils(floor, startAddress, count);
       }
 
-      // Update room state from D100/D101 holding registers
+      // Update room state from D100/D101 holding registers (O(1) floor lookup)
       if (registerType === 'holding' && startAddress === 100 && result) {
         const [d100, d101] = result;
-        for (const [room, mapping] of config.roomMap.entries()) {
-          if (mapping.floor === floor) {
-            stateManager.updateRoomState(room, d100, d101, mapping);
-            stateManager.updateCoilState(room, 'main', !!((d101 >> mapping.y_output_main) & 1));
-            stateManager.updateCoilState(room, 'sub',  !!((d101 >> mapping.y_output_sub)  & 1));
-          }
+        const roomsOnFloor = config.getRoomsByFloor(floor);
+        
+        for (const { room, mapping } of roomsOnFloor) {
+          stateManager.updateRoomState(room, d100, d101, mapping);
+          stateManager.updateCoilState(room, 'main', !!((d101 >> mapping.y_output_main) & 1));
+          stateManager.updateCoilState(room, 'sub',  !!((d101 >> mapping.y_output_sub)  & 1));
         }
         logger.debug(`READ floor ${floor}: D100=${d100}, D101=${d101}`);
       }
 
       return result;
     } catch (error) {
-      logger.warn(`READ failed for floor ${floor}: ${error.message}`);
       throw error;
     }
   }

@@ -18,12 +18,35 @@ class StateManager {
   constructor() {
     this.stateFilePath = join(__dirname, '../../data/state.json');
     this.ensureDataDir();
-    
+
     // In-memory room states (from PLC input x, output main/sub)
     this.roomStates = {};
-    
+
     // Persisted coil states (what we sent to PLC)
     this.coilStates = this.loadCoilStates();
+
+    // Generate lookup map for O(1) calculateRoomState: "x-y-ySub" -> { state, stateName }
+    this.stateLookup = this._initStateLookup();
+  }
+
+  /**
+   * Initialize state lookup table from static definitions
+   */
+  _initStateLookup() {
+    const lookup = {};
+    const definitions = {
+      0: { name: 'Trống', x: false, y: false, ySub: false },
+      1: { name: 'Check-in', x: false, y: true, ySub: false },
+      2: { name: 'Vào phòng', x: true, y: true, ySub: false },
+      3: { name: 'Dùng thẻ', x: true, y: true, ySub: true },
+      4: { name: 'Sửa chữa', x: true, y: false, ySub: true }
+    };
+
+    for (const [id, s] of Object.entries(definitions)) {
+      const key = `${!!s.x}-${!!s.y}-${!!s.ySub}`;
+      lookup[key] = { state: parseInt(id), stateName: s.name };
+    }
+    return lookup;
   }
 
   ensureDataDir() {
@@ -62,35 +85,13 @@ class StateManager {
     }
   }
 
-  /**
-   * State definition mapping
-   */
-  get states() {
-    return {
-      0: { name: 'Trống', x: false, y: false, ySub: false },
-      1: { name: 'Check-in', x: false, y: true, ySub: false },
-      2: { name: 'Vào phòng', x: true, y: true, ySub: false },
-      3: { name: 'Dùng thẻ', x: true, y: true, ySub: true },
-      4: { name: 'Sửa chữa', x: true, y: false, ySub: true }
-    };
-  }
 
   /**
-   * Calculate room state based on input/output logic
+   * Calculate room state based on input/output logic (O(1) lookup)
    */
   calculateRoomState(x, y, ySub) {
-    const stateEntry = Object.entries(this.states).find(([_, s]) => 
-      s.x === !!x && s.y === !!y && s.ySub === !!ySub
-    );
-
-    if (stateEntry) {
-      return { 
-        state: parseInt(stateEntry[0]), 
-        stateName: stateEntry[1].name 
-      };
-    }
-    
-    return { state: -1, stateName: 'Unknown' };
+    const key = `${!!x}-${!!y}-${!!ySub}`;
+    return this.stateLookup[key] || { state: -1, stateName: 'Unknown' };
   }
 
   /**
@@ -100,15 +101,15 @@ class StateManager {
     const xInput = !!((d100 >> mapping.x_input) & 1);
     const yOutputMain = !!((d101 >> mapping.y_output_main) & 1);
     const yOutputSub = !!((d101 >> mapping.y_output_sub) & 1);
-    
+
     const previous = this.roomStates[room];
     const { state, stateName } = this.calculateRoomState(xInput, yOutputMain, yOutputSub);
-    
+
     // Change detection: only update if something changed
-    const hasChanged = !previous || 
-      previous.state !== state || 
-      previous.x_input !== xInput || 
-      previous.y_output_main !== yOutputMain || 
+    const hasChanged = !previous ||
+      previous.state !== state ||
+      previous.x_input !== xInput ||
+      previous.y_output_main !== yOutputMain ||
       previous.y_output_sub !== yOutputSub;
 
     if (!hasChanged) return;
@@ -127,7 +128,7 @@ class StateManager {
     if (previous && previous.stateName !== stateName) {
       this.handleStateTransition(room, mapping.floor, previous.stateName, stateName);
     }
-    
+
     // Note: monitorService will check this.roomStates to decide if it should emit
   }
 
@@ -138,13 +139,13 @@ class StateManager {
     try {
       // Generate message
       const message = notificationService.generateMessage(room, previousStateName, newStateName);
-      
+
       // Log to CSV history
       historyLogger.logStateChange(room, floor, previousStateName, newStateName, message);
-      
+
       // Send notifications (Telegram, Email, WebSocket)
       notificationService.sendNotification(room, previousStateName, newStateName, message);
-      
+
       logger.info(`State transition: Room ${room} ${previousStateName} → ${newStateName}`);
     } catch (error) {
       logger.error(`Failed to handle state transition: ${error.message}`);
@@ -171,7 +172,7 @@ class StateManager {
   updateCoilState(room, relayType, value) {
     const boolValue = !!value;
     const current = this.coilStates[room] || { y_output_main: null, y_output_sub: null };
-    
+
     const isMainChange = relayType === 'main' && current.y_output_main !== boolValue;
     const isSubChange = relayType === 'sub' && current.y_output_sub !== boolValue;
 
@@ -179,18 +180,18 @@ class StateManager {
       if (!this.coilStates[room]) {
         this.coilStates[room] = { y_output_main: null, y_output_sub: null };
       }
-      
+
       if (relayType === 'main') {
         this.coilStates[room].y_output_main = boolValue;
       } else {
         this.coilStates[room].y_output_sub = boolValue;
       }
-      
+
       this.coilStates[room].timestamp = new Date().toISOString();
       this.saveCoilStates();
       return true; // Indicating change
     }
-    
+
     return false;
   }
 

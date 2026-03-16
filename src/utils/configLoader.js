@@ -11,6 +11,7 @@ class ConfigLoader {
     this.configPath = join(__dirname, '../config/appsettings.json');
     this.config = {};
     this.roomMap = new Map();
+    this.floorRoomMap = new Map(); // Floor -> Array of {room, mapping}
     this.plcMap = new Map();
     
     this.load();
@@ -25,6 +26,13 @@ class ConfigLoader {
       if (this.config.roomMapping) {
         for (const [room, mapping] of Object.entries(this.config.roomMapping)) {
           this.roomMap.set(room, mapping);
+          
+          // Build Floor -> Rooms map
+          const floor = mapping.floor;
+          if (!this.floorRoomMap.has(floor)) {
+            this.floorRoomMap.set(floor, []);
+          }
+          this.floorRoomMap.get(floor).push({ room, mapping });
         }
       }
 
@@ -52,6 +60,10 @@ class ConfigLoader {
 
   getPLCConfig(floor) {
     return this.plcMap.get(floor);
+  }
+
+  getRoomsByFloor(floor) {
+    return this.floorRoomMap.get(floor) || [];
   }
 
   get plcs() {

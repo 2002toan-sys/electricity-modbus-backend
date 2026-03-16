@@ -42,6 +42,11 @@ app.use(express.json());
 app.use(limiter);
 app.use(routes);
 
+// Healthcheck endpoint
+app.get('/api/status', (req, res) => {
+  res.status(200).json({ status: 'ok', timestamp: new Date().toISOString() });
+});
+
 // JSON parse error handler
 app.use((err, req, res, next) => {
   if (err && err instanceof SyntaxError && err.status === 400 && 'body' in err) {
