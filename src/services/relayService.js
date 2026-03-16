@@ -1,9 +1,8 @@
 import commandQueue from './commandQueue.js';
 import stateManager from './stateManager.js';
 import monitorService from './monitorService.js';
-import config from '../config/index.js';
+import config from '../utils/configLoader.js';
 import logger from '../utils/logger.js';
-import { EventEmitter } from 'events';
 
 /**
  * RelayService: Handles relay write operations with verification
@@ -12,7 +11,6 @@ import { EventEmitter } from 'events';
  * - Updates persisted coil state
  * - Triggers async interlock events
  */
-export const relayEmitter = new EventEmitter();
 
 class RelayService {
   /**
@@ -41,7 +39,7 @@ class RelayService {
     }
 
     // Validate room and get mapping
-    const mapping = config.roomMapping[room];
+    const mapping = config.getRoomMapping(room);
     if (!mapping) {
       throw new Error(`Room ${room} not in mapping`);
     }
@@ -50,7 +48,6 @@ class RelayService {
     const coilAddress = relayType === 'main' ? mapping.y_main_coil : mapping.y_sub_coil;
     const value = setValue.toLowerCase() === 'on';
 
-    // Enqueue WRITE with priority (goes to FRONT of queue)
     return new Promise((resolve, reject) => {
       const writeCallback = (error, result) => {
         if (error) {
@@ -61,30 +58,26 @@ class RelayService {
 
         try {
           // Update persisted coil state
-          stateManager.updateCoilState(room, relayType, value);
-          stateManager.saveCoilStates();
-
-          logger.debug(`Relay ${relayType} set to ${setValue} for room ${room}`);
+          const changed = stateManager.updateCoilState(room, relayType, value);
           
-          // Broadcast state update immediately
-          monitorService.emitStateUpdate();
+          if (changed) {
+            logger.debug(`Relay ${relayType} set to ${setValue} for room ${room}`);
+            // Broadcast state update immediately if something changed
+            monitorService.emitStateUpdate();
+          }
           
-          // Interlock: if main OFF, queue sub OFF
+          // Interlock: if main turned OFF, queue sub OFF directly
           if (relayType === 'main' && !value && config.app.interlock_enabled) {
-            setImmediate(() => {
-              relayEmitter.emit('interlockRequired', { room, mapping });
-            });
+            logger.info(`Interlock: queuing sub relay OFF for room ${room}`);
+            commandQueue.enqueueWriteCoil(mapping.floor, mapping.y_sub_coil, false);
           }
 
-          // Return response
           resolve({
             room,
             status: value ? 'on' : 'off',
             type: relayType,
             floor: mapping.floor,
-            time: new Date().toLocaleString("vi-VN", {
-              timeZone: "Asia/Ho_Chi_Minh"
-            })
+            timestamp: new Date().toISOString()
           });
         } catch (err) {
           logger.error(`Error processing relay write for room ${room}: ${err.message}`);
@@ -93,15 +86,14 @@ class RelayService {
       };
 
       // Enqueue WRITE command with HIGH priority
-      commandQueue.enqueueWrite(
+      commandQueue.enqueueWriteCoil(
         mapping.floor,
-        'writeCoil',
         coilAddress,
         value,
         writeCallback
       );
 
-      logger.debug(`Relay write queued for room ${room} ${relayType} on floor ${mapping.floor}`);
+      logger.debug(`Relay write queued for room ${room} ${relayType}`);
     });
   }
 }

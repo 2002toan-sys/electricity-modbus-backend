@@ -4,7 +4,7 @@ import { fileURLToPath } from 'url';
 import logger from '../utils/logger.js';
 import historyLogger from './historyLogger.js';
 import notificationService from './notificationService.js';
-import config from '../config/index.js';
+import config from '../utils/configLoader.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -63,65 +63,72 @@ class StateManager {
   }
 
   /**
-   * Calculate room state based on input/output logic
-   * Returns state number and state name for UI display
-   * 
-   * State mapping:
-   *  0: Trống (x=0, y_main=0, y_sub=0)
-   *  1: Check-in (x=0, y_main=1, y_sub=0)
-   *  2: Vào phòng (x=1, y_main=1, y_sub=0)
-   *  3: Dùng thẻ (x=1, y_main=1, y_sub=1)
-   *  4: Dọn dẹp (x=1, y_main=0, y_sub=1)
+   * State definition mapping
    */
-  calculateRoomState(xInput, yOutputMain, yOutputSub) {
-    // Convert to boolean
-    const x = !!xInput;
-    const y = !!yOutputMain;
-    const ySub = !!yOutputSub;
+  get states() {
+    return {
+      0: { name: 'Trống', x: false, y: false, ySub: false },
+      1: { name: 'Check-in', x: false, y: true, ySub: false },
+      2: { name: 'Vào phòng', x: true, y: true, ySub: false },
+      3: { name: 'Dùng thẻ', x: true, y: true, ySub: true },
+      4: { name: 'Sửa chữa', x: true, y: false, ySub: true }
+    };
+  }
 
-    // State logic
-    if (!x && !y && !ySub) return { state: 0, stateName: 'Trống' };
-    if (!x && y && !ySub) return { state: 1, stateName: 'Check-in' };
-    if (x && y && !ySub) return { state: 2, stateName: 'Vào phòng' };
-    if (x && y && ySub) return { state: 3, stateName: 'Dùng thẻ' };
-    if (x && !y && ySub) return { state: 4, stateName: 'Sửa chữa' };
+  /**
+   * Calculate room state based on input/output logic
+   */
+  calculateRoomState(x, y, ySub) {
+    const stateEntry = Object.entries(this.states).find(([_, s]) => 
+      s.x === !!x && s.y === !!y && s.ySub === !!ySub
+    );
+
+    if (stateEntry) {
+      return { 
+        state: parseInt(stateEntry[0]), 
+        stateName: stateEntry[1].name 
+      };
+    }
     
     return { state: -1, stateName: 'Unknown' };
   }
 
   /**
-   * Update room state from PLC register values
-   * Inputs:
-   *  - room: room number (e.g., "201")
-   *  - d100: D100 register value (contains x_input bits)
-   *  - d101: D101 register value (contains y_output_main, y_output_sub bits)
-   *  - mapping: room mapping config
+   * Update room state from PLC register values with change detection
    */
   updateRoomState(room, d100, d101, mapping) {
-    const xInput = (d100 >> mapping.x_input) & 1;
-    const yOutputMain = (d101 >> mapping.y_output_main) & 1;
-    const yOutputSub = (d101 >> mapping.y_output_sub) & 1;
+    const xInput = !!((d100 >> mapping.x_input) & 1);
+    const yOutputMain = !!((d101 >> mapping.y_output_main) & 1);
+    const yOutputSub = !!((d101 >> mapping.y_output_sub) & 1);
     
-    // Get previous state
-    const previousState = this.roomStates[room];
-    
-    // Calculate new state
+    const previous = this.roomStates[room];
     const { state, stateName } = this.calculateRoomState(xInput, yOutputMain, yOutputSub);
     
+    // Change detection: only update if something changed
+    const hasChanged = !previous || 
+      previous.state !== state || 
+      previous.x_input !== xInput || 
+      previous.y_output_main !== yOutputMain || 
+      previous.y_output_sub !== yOutputSub;
+
+    if (!hasChanged) return;
+
     this.roomStates[room] = {
       room,
       state,
       stateName,
-      x_input: !!xInput,
-      y_output_main: !!yOutputMain,
-      y_output_sub: !!yOutputSub,
+      x_input: xInput,
+      y_output_main: yOutputMain,
+      y_output_sub: yOutputSub,
       timestamp: new Date().toISOString()
     };
 
-    // Track state transition
-    if (previousState && previousState.stateName !== stateName) {
-      this.handleStateTransition(room, mapping.floor, previousState.stateName, stateName);
+    // Track state transition for logging/notifications
+    if (previous && previous.stateName !== stateName) {
+      this.handleStateTransition(room, mapping.floor, previous.stateName, stateName);
     }
+    
+    // Note: monitorService will check this.roomStates to decide if it should emit
   }
 
   /**
@@ -159,21 +166,32 @@ class StateManager {
   }
 
   /**
-   * Update coil state after successful write
-   * Called from relayService after verifying write
+   * Update coil state after successful write with change detection
    */
   updateCoilState(room, relayType, value) {
-    if (!this.coilStates[room]) {
-      this.coilStates[room] = { y_output_main: null, y_output_sub: null };
+    const boolValue = !!value;
+    const current = this.coilStates[room] || { y_output_main: null, y_output_sub: null };
+    
+    const isMainChange = relayType === 'main' && current.y_output_main !== boolValue;
+    const isSubChange = relayType === 'sub' && current.y_output_sub !== boolValue;
+
+    if (isMainChange || isSubChange || !this.coilStates[room]) {
+      if (!this.coilStates[room]) {
+        this.coilStates[room] = { y_output_main: null, y_output_sub: null };
+      }
+      
+      if (relayType === 'main') {
+        this.coilStates[room].y_output_main = boolValue;
+      } else {
+        this.coilStates[room].y_output_sub = boolValue;
+      }
+      
+      this.coilStates[room].timestamp = new Date().toISOString();
+      this.saveCoilStates();
+      return true; // Indicating change
     }
     
-    if (relayType === 'main') {
-      this.coilStates[room].y_output_main = !!value;
-    } else if (relayType === 'sub') {
-      this.coilStates[room].y_output_sub = !!value;
-    }
-    
-    this.coilStates[room].timestamp = new Date().toISOString();
+    return false;
   }
 
   /**

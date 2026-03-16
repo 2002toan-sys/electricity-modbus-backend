@@ -1,7 +1,7 @@
 import relayService from '../services/relayService.js';
 import { validateRelayRequest } from '../utils/validator.js';
 import logger from '../utils/logger.js';
-import config from '../config/index.js';
+import config from '../utils/configLoader.js';
 
 /**
  * POST /api/relay/main/set - Set main relay for rooms

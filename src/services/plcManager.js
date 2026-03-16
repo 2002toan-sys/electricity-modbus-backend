@@ -1,323 +1,160 @@
-import ModbusRTU from 'modbus-serial';
-import config from '../config/index.js';
+import Modbus from 'jsmodbus';
+import net from 'net';
+import config from '../utils/configLoader.js';
 import logger from '../utils/logger.js';
 
-// Dynamic import to avoid circular dependency
-let commandQueue = null;
-const getCommandQueue = async () => {
-  if (!commandQueue) {
+// Lazy import to avoid circular dependency with commandQueue
+let _commandQueue = null;
+async function getCommandQueue() {
+  if (!_commandQueue) {
     try {
-      const module = await import('./commandQueue.js');
-      commandQueue = module.default;
-    } catch (err) {
-      logger.warn('Cannot import commandQueue');
+      _commandQueue = (await import('./commandQueue.js')).default;
+    } catch {
+      logger.warn('PLCManager: cannot import commandQueue');
     }
   }
-  return commandQueue;
-};
+  return _commandQueue;
+}
 
-/**
- * PLCManager: Manages connections to multiple PLCs with exponential backoff reconnection
- * Ensures that one PLC failure doesn't block others
- */
 class PLCManager {
   constructor() {
-    if (PLCManager.instance) {
-      return PLCManager.instance;
-    }
+    if (PLCManager.instance) return PLCManager.instance;
 
-    this.clients = new Map();         // Map of connected ModbusRTU clients
-    this.reconnectTimers = new Map(); // Track reconnect timeout IDs per PLC
-    this.reconnectDelays = new Map(); // Track current backoff delay per PLC
-    this.isReconnecting = new Map();  // Flag to prevent duplicate reconnect scheduling
-    
+    this.clients = new Map();         // floor_N -> { socket, client, config, connected, lastError }
+    this.reconnectTimers = new Map(); // floor_N -> timerId
+    this.reconnectDelays = new Map(); // floor_N -> current backoff delay (ms)
+    this.isReconnecting = new Map();  // floor_N -> boolean
+
     PLCManager.instance = this;
   }
 
-  /**
-   * Initialize all PLCs from config
-   */
+  // ─── Initialization ────────────────────────────────────────────────────────
+
   async initialize() {
-    const connectPromises = config.plcs.map(plcConfig => this.connectPLC(plcConfig));
-    await Promise.allSettled(connectPromises);
+    await Promise.allSettled(config.plcs.map(plcConfig => this.connectPLC(plcConfig)));
     logger.info(`All PLCs initialized (${config.plcs.length} configured)`);
   }
 
-  /**
-   * Helper: Extract underlying socket from ModbusRTU client
-   */
-  getSocketFromClient(client) {
-    if (!client) return null;
-    return client._client || client._sock || client.socket || null;
-  }
+  // ─── Connection Management ─────────────────────────────────────────────────
 
-  /**
-   * Helper: Close socket safely
-   */
-  closeSocket(socket, key) {
-    if (!socket) return;
-    
-    try {
-      if (typeof socket.removeAllListeners === 'function') {
-        socket.removeAllListeners();
-      }
+  connectPLC(plcConfig) {
+    return new Promise(resolve => {
+      const key = `floor_${plcConfig.floor}`;
 
-      if (typeof socket.destroy === 'function' && !socket.destroyed) {
-        socket.destroy();
-        logger.debug(`Destroyed socket for ${key}`);
-      }
-    } catch (err) {
-      logger.warn(`Error closing socket ${key}: ${err.message}`);
-    }
-  }
+      // Tear down existing socket if any
+      const existing = this.clients.get(key);
+      if (existing?.socket) this._destroySocket(existing.socket);
 
-  /**
-   * Helper: Close ModbusRTU client safely
-   */
-  closeClient(client, key) {
-    if (!client) return;
+      const socket = new net.Socket();
+      const client = new Modbus.client.TCP(socket, plcConfig.slaveId, plcConfig.timeout);
 
-    try {
-      const socket = this.getSocketFromClient(client);
-      this.closeSocket(socket, key);
+      this.clients.set(key, { socket, client, config: plcConfig, connected: false, lastError: null });
 
-      if (client.isOpen) {
-        client.close(() => {
-          logger.debug(`Closed client for ${key}`);
-        });
-      }
-    } catch (err) {
-      logger.warn(`Error closing client ${key}: ${err.message}`);
-    }
-  }
+      socket.setKeepAlive(true, 10000);
 
-  /**
-   * Connect to a single PLC
-   */
-  async connectPLC(plcConfig) {
-    const key = `floor_${plcConfig.floor}`;
-    
-    try {
-      // Destroy any existing connection first
-      const existingEntry = this.clients.get(key);
-      if (existingEntry?.client) {
-        this.closeClient(existingEntry.client, key);
-      }
-
-      const client = new ModbusRTU();
-      client.setID(plcConfig.slaveId);
-      client.setTimeout(plcConfig.timeout);
-      await client.connectTCP(plcConfig.ip, { port: plcConfig.port });
-      
-      this.clients.set(key, {
-        client,
-        config: plcConfig,
-        connected: true,
-        lastError: null
+      socket.once('connect', async () => {
+        this.clients.get(key).connected = true;
+        this.reconnectDelays.delete(key);
+        logger.info(`Connected to PLC Floor ${plcConfig.floor} (${plcConfig.ip}:${plcConfig.port})`);
+        const q = await getCommandQueue();
+        q?.processQueue(plcConfig.floor);
+        resolve();
       });
 
-      // Attach listeners to detect disconnects
-      const socket = this.getSocketFromClient(client);
-      if (socket?.on) {
-        // Set TCP Keep-alive to detect dead connections faster
-        if (typeof socket.setKeepAlive === 'function') {
-          socket.setKeepAlive(true, 10000); // 10s idle before sending keep-alive
-          logger.debug(`Enabled TCP keep-alive for Floor ${plcConfig.floor}`);
-        }
+      socket.on('error', err => {
+        const entry = this.clients.get(key);
+        if (entry) { entry.connected = false; entry.lastError = err.message; }
+        logger.warn(`Floor ${plcConfig.floor} socket error: ${err.message}`);
+      });
 
-        socket.on('close', (hadError) => {
-          logger.warn(`Floor ${plcConfig.floor} socket closed (hadError=${hadError})`);
-          const entry = this.clients.get(key);
-          if (entry) entry.connected = false;
-          this.scheduleReconnect(plcConfig);
-        });
+      socket.once('close', () => {
+        const entry = this.clients.get(key);
+        if (entry) entry.connected = false;
+        logger.warn(`Floor ${plcConfig.floor} socket closed`);
+        this.scheduleReconnect(plcConfig);
+        resolve(); // resolve in case connection never succeeded
+      });
 
-        socket.on('error', (err) => {
-          logger.warn(`Floor ${plcConfig.floor} socket error: ${err.message}`);
-          const entry = this.clients.get(key);
-          if (entry) {
-            entry.connected = false;
-            entry.lastError = err.message;
-          }
-          this.scheduleReconnect(plcConfig);
-        });
-      }
+      socket.on('timeout', () => {
+        logger.warn(`Floor ${plcConfig.floor} socket timeout`);
+        socket.destroy();
+      });
 
-      // Also listen on client for higher-level errors
-      if (client.on) {
-        client.on('error', (err) => {
-          logger.error(`Floor ${plcConfig.floor} Modbus client error: ${err.message}`);
-          const entry = this.clients.get(key);
-          if (entry) entry.connected = false;
-          this.scheduleReconnect(plcConfig);
-        });
-      }
-
-      logger.info(`Connected to PLC Floor ${plcConfig.floor} (${plcConfig.ip}:${plcConfig.port})`);
-      this.reconnectDelays.delete(key);
-      
-      // Notify queue to resume processing if there are pending commands
-      const queue = await getCommandQueue();
-      if (queue) {
-        queue.processQueue(plcConfig.floor);
-      }
-    } catch (error) {
-      logger.error(`Failed to connect PLC Floor ${plcConfig.floor}: ${error.message}`);
-      this.scheduleReconnect(plcConfig);
-    }
+      socket.connect({ host: plcConfig.ip, port: plcConfig.port });
+    });
   }
 
-  /**
-   * Schedule reconnection with exponential backoff
-   * Prevents multiple simultaneous reconnect attempts per PLC
-   */
   scheduleReconnect(plcConfig) {
     const key = `floor_${plcConfig.floor}`;
-    
-    if (this.isReconnecting.get(key) || this.reconnectTimers.has(key)) {
-      return;
-    }
+    if (this.isReconnecting.get(key) || this.reconnectTimers.has(key)) return;
 
     this.isReconnecting.set(key, true);
 
-    const cfg = config.reconnect || { initialDelay: 2000, maxDelay: 30000, backoffMultiplier: 1.5 };
-    const currentDelay = this.reconnectDelays.get(key) || cfg.initialDelay;
-    const nextDelay = Math.min(currentDelay * cfg.backoffMultiplier, cfg.maxDelay);
-    this.reconnectDelays.set(key, nextDelay);
+    const { initialDelay = 2000, maxDelay = 30000, backoffMultiplier = 1.5 } = config.reconnect || {};
+    const delay = this.reconnectDelays.get(key) || initialDelay;
+    this.reconnectDelays.set(key, Math.min(delay * backoffMultiplier, maxDelay));
 
-    logger.warn(`Floor ${plcConfig.floor}: Reconnecting in ${currentDelay}ms`);
+    logger.warn(`Floor ${plcConfig.floor}: Reconnecting in ${delay}ms`);
 
     const timer = setTimeout(async () => {
-      logger.info(`Reconnect attempt: Floor ${plcConfig.floor}`);
       this.reconnectTimers.delete(key);
       this.isReconnecting.delete(key);
+      logger.info(`Reconnect attempt: Floor ${plcConfig.floor}`);
       await this.connectPLC(plcConfig);
-    }, currentDelay);
+    }, delay);
 
     this.reconnectTimers.set(key, timer);
   }
 
-  /**
-   * Get client for a floor, throws if not connected
-   */
-  getClient(floor) {
-    const key = `floor_${floor}`;
-    const entry = this.clients.get(key);
-    
-    if (!entry?.client) {
-      throw new Error(`Floor ${floor} not initialized`);
-    }
+  _destroySocket(socket) {
+    try {
+      socket.removeAllListeners();
+      if (!socket.destroyed) socket.destroy();
+    } catch { /* ignore */ }
+  }
 
-    // Check high-level open status
-    if (!entry.client.isOpen) {
+  // ─── Client Access ─────────────────────────────────────────────────────────
+
+  getClient(floor) {
+    const entry = this.clients.get(`floor_${floor}`);
+    if (!entry?.client) throw new Error(`Floor ${floor} not initialized`);
+    if (!entry.connected || entry.socket.destroyed || !entry.socket.writable) {
       entry.connected = false;
       throw new Error(`Floor ${floor} port not open`);
     }
-
-    if (!entry.connected) {
-      throw new Error(`Floor ${floor} marked as disconnected`);
-    }
-
-    const socket = this.getSocketFromClient(entry.client);
-    if (socket?.destroyed) {
-      entry.connected = false;
-      throw new Error(`Floor ${floor} socket destroyed`);
-    }
-    
     return entry.client;
   }
 
-  /**
-   * Write coil
-   * Retries handled by CommandQueue at higher level
-   */
-  async writeCoil(floor, coilAddress, value) {
-    try {
-      const client = this.getClient(floor);
-      await client.writeCoil(coilAddress, value);
-      return true;
-    } catch (error) {
-      throw error;
-    }
+  // ─── Modbus Operations ─────────────────────────────────────────────────────
+
+  async writeCoil(floor, address, value) {
+    await this.getClient(floor).writeSingleCoil(address, value);
+    return true;
   }
 
-  /**
-   * Read coil
-   * Retries handled by CommandQueue at higher level
-   */
-  async readCoil(floor, coilAddress) {
-    try {
-      const client = this.getClient(floor);
-      const result = await client.readCoils(coilAddress, 1);
-      return result.data[0];
-    } catch (error) {
-      throw error;
-    }
+  async writeRegister(floor, address, value) {
+    await this.getClient(floor).writeSingleRegister(address, value);
+    return true;
   }
 
-  /**
-   * Read multiple coils
-   * Retries handled by CommandQueue at higher level
-   */
   async readCoils(floor, startAddress, count) {
-    try {
-      const client = this.getClient(floor);
-      const result = await client.readCoils(startAddress, count);
-      return result.data;
-    } catch (error) {
-      throw error;
-    }
+    const resp = await this.getClient(floor).readCoils(startAddress, count);
+    return resp.response.body.valuesAsArray;
   }
 
-  /**
-   * Write register
-   * Retries handled by CommandQueue at higher level
-   */
-  async writeRegister(floor, registerAddress, value) {
-    try {
-      const client = this.getClient(floor);
-      await client.writeRegister(registerAddress, value);
-      return true;
-    } catch (error) {
-      throw error;
-    }
-  }
-
-  /**
-   * Read registers
-   * Retries handled by CommandQueue at higher level
-   */
   async readRegisters(floor, startAddress, count) {
-    try {
-      const client = this.getClient(floor);
-      const result = await client.readHoldingRegisters(startAddress, count);
-      return result.data;
-    } catch (error) {
-     
-      throw error;
-    }
+    const resp = await this.getClient(floor).readHoldingRegisters(startAddress, count);
+    return resp.response.body.valuesAsArray;
   }
 
- 
+  // ─── Status ────────────────────────────────────────────────────────────────
 
-  /**
-   * Get connection status for a single PLC
-   */
   getConnectionStatus(floor) {
     const key = `floor_${floor}`;
     const entry = this.clients.get(key);
-    
     if (!entry) {
-      return {
-        floor,
-        connected: false,
-        status: 'Not initialized',
-        isReconnecting: false,
-        reconnectDelay: null,
-        lastError: null
-      };
+      return { floor, connected: false, status: 'Not initialized', isReconnecting: false, reconnectDelay: null, lastError: null };
     }
-
     return {
       floor,
       connected: entry.connected,
@@ -328,27 +165,15 @@ class PLCManager {
     };
   }
 
-  /**
-   * Get connection status for all PLCs
-   */
   getAllConnectionStatus() {
-    return config.plcs.map(plc => this.getConnectionStatus(plc.floor));
+    return config.plcs.map(({ floor }) => this.getConnectionStatus(floor));
   }
 
-  /**
-   * Cleanup: close all connections and clear timers
-   */
+  // ─── Cleanup ───────────────────────────────────────────────────────────────
+
   async destroy() {
-    for (const [key, entry] of this.clients.entries()) {
-      if (entry.client) {
-        this.closeClient(entry.client, key);
-      }
-    }
-    
-    for (const timer of this.reconnectTimers.values()) {
-      clearTimeout(timer);
-    }
-    
+    for (const { socket } of this.clients.values()) this._destroySocket(socket);
+    for (const timer of this.reconnectTimers.values()) clearTimeout(timer);
     this.reconnectTimers.clear();
     this.reconnectDelays.clear();
     this.isReconnecting.clear();

@@ -1,4 +1,4 @@
-import config from '../config/index.js';
+import config from '../utils/configLoader.js';
 import logger from '../utils/logger.js';
 
 /**

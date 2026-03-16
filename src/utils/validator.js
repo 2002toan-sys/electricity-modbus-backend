@@ -1,10 +1,10 @@
-import config from '../config/index.js';
+import config from './configLoader.js';
 
 /**
  * Validate if room exists in mapping
  */
 export const validateRoomMapping = (room) => {
-  return config.roomMapping[room] !== undefined;
+  return config.getRoomMapping(room) !== undefined;
 };
 
 /**

@@ -1,5 +1,5 @@
 import rateLimit from 'express-rate-limit';
-import config from '../config/index.js';
+import config from '../utils/configLoader.js';
 
 export const limiter = rateLimit({
   windowMs: config.rateLimit?.windowMs || 60 * 1000,

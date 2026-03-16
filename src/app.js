@@ -10,8 +10,7 @@ import monitorService from './services/monitorService.js';
 import commandQueue from './services/commandQueue.js';
 import notificationService from './services/notificationService.js';
 import logger from './utils/logger.js';
-import relayService, { relayEmitter } from './services/relayService.js';
-import config from './config/index.js';
+import config from './utils/configLoader.js';
 
 const app = express();
 
@@ -67,22 +66,7 @@ notificationService.on('state-change', (notification) => {
   logger.debug(`Broadcasted state change: Room ${notification.room} → ${notification.newState}`);
 });
 
-// Interlock event handler - executes sub OFF asynchronously
-relayEmitter.on('interlockRequired', async (payload) => {
-  const { room, mapping } = payload;
-  try {
-    logger.debug(`Interlock: enqueue sub-OFF for room ${room} (will run after main OFF)`);
-
-    // Use relayService.setRelay so the sub-OFF is queued per-floor and runs
-    // after the main OFF operation completes. relayService will handle
-    // verification, state updates and emitting state changes.
-    await relayService.setRelay(room, 'sub', 'off');
-
-    logger.debug(`Interlock enqueue complete for room ${room}`);
-  } catch (error) {
-    logger.error(`Interlock failed for room ${room}: ${error.message}`);
-  }
-});
+// Note: Interlock logic is now handled directly in relayService.js via commandQueue
 
 const PORT = config.app?.port || 3000;
 

@@ -2,7 +2,7 @@ import monitorService from '../services/monitorService.js';
 import plcManager from '../services/plcManager.js';
 import stateManager from '../services/stateManager.js';
 import historyLogger from '../services/historyLogger.js';
-import config from '../config/index.js';
+import config from '../utils/configLoader.js';
 
 /**
  * GET /api/monitor/rooms - Get all room states with calculated state
@@ -14,7 +14,7 @@ export const getRoomStates = (req, res) => {
     
     // If no room states exist yet, initialize from config
     if (Object.keys(roomStates).length === 0) {
-      Object.keys(config.roomMapping || {}).forEach((roomId) => {
+      config.roomMap.forEach((mapping, roomId) => {
         if (!roomStates[roomId]) {
           roomStates[roomId] = {
             room: roomId,
@@ -118,7 +118,7 @@ export const updateRoomFromApi = (req, res) => {
     if (!room) return res.status(400).json({ error: 'Missing room in request body' });
 
     const roomId = room.toString();
-    const mapping = config.roomMapping[roomId] || config.roomMapping[parseInt(roomId)];
+    const mapping = config.getRoomMapping(roomId);
     if (!mapping) return res.status(400).json({ error: `Room ${roomId} not found in mapping` });
 
     // If registers provided, use them directly

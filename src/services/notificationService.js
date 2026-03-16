@@ -1,7 +1,7 @@
 import axios from 'axios';
 import nodemailer from 'nodemailer';
 import logger from '../utils/logger.js';
-import config from '../config/index.js';
+import config from '../utils/configLoader.js';
 import { EventEmitter } from 'events';
 
 class NotificationService extends EventEmitter {

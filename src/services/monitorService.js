@@ -1,6 +1,6 @@
 import commandQueue from './commandQueue.js';
 import stateManager from './stateManager.js';
-import config from '../config/index.js';
+import config from '../utils/configLoader.js';
 import logger from '../utils/logger.js';
 
 /**
@@ -59,28 +59,43 @@ class MonitorService {
   }
 
   /**
-   * Broadcast room states to WebSocket clients
+   * Broadcast room states to WebSocket clients only on change
    */
   emitStateUpdate() {
-    if (this.io) {
+    if (!this.io) return;
+
+    const currentStates = stateManager.getAllRoomStates();
+    const currentCoils = stateManager.getAllCoilStates();
+    const queueStatus = commandQueue.getQueueStatus();
+
+    const statePayload = JSON.stringify({ roomStates: currentStates, coilStates: currentCoils, queueStatus });
+    
+    if (this.lastStatePayload !== statePayload) {
       this.io.emit('roomStateUpdate', {
-        roomStates: stateManager.getAllRoomStates(),
-        coilStates: stateManager.getAllCoilStates(),
-        queueStatus: commandQueue.getQueueStatus(),
+        roomStates: currentStates,
+        coilStates: currentCoils,
+        queueStatus,
         timestamp: new Date().toISOString()
       });
+      this.lastStatePayload = statePayload;
     }
   }
 
   /**
-   * Broadcast PLC connection status to WebSocket clients
+   * Broadcast PLC connection status only on change
    */
   emitConnectionStatus() {
-    if (this.io) {
+    if (!this.io) return;
+
+    const statuses = commandQueue.getQueueStatus();
+    const statusPayload = JSON.stringify(statuses);
+
+    if (this.lastStatusPayload !== statusPayload) {
       this.io.emit('plcStatus', {
-        statuses: commandQueue.getQueueStatus(),
+        statuses,
         timestamp: new Date().toISOString()
       });
+      this.lastStatusPayload = statusPayload;
     }
   }
 
