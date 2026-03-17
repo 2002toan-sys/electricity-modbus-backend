@@ -30,6 +30,11 @@ app.use(session({
   cookie: { secure: false, httpOnly: true, maxAge: config.auth?.session?.maxAge || 86400000 }
 }));
 const httpServer = createServer(app);
+
+// Configure HTTP Keep-Alive
+httpServer.keepAliveTimeout = config.app?.http_keep_alive_timeout || 60000;
+httpServer.headersTimeout = httpServer.keepAliveTimeout + 1000;
+
 const io = new Server(httpServer, {
   cors: {
     origin: true,
