@@ -59,16 +59,16 @@ class RelayService {
         try {
           // Update persisted coil state
           const changed = stateManager.updateCoilState(room, relayType, value);
-          
+
           if (changed) {
-            logger.debug(`Relay ${relayType} set to ${setValue} for room ${room}`);
+            logger.info(`Relay ${relayType} set to ${setValue} for room ${room}`);
             // Broadcast state update immediately if something changed
             monitorService.emitStateUpdate();
           }
-          
+
           // Interlock: if main turned OFF, queue sub OFF directly
           if (relayType === 'main' && !value && config.app.interlock_enabled) {
-            logger.info(`Interlock: queuing sub relay OFF for room ${room}`);
+            logger.debug(`Interlock: queuing sub relay OFF for room ${room}`);
             commandQueue.enqueueWriteCoil(mapping.floor, mapping.y_sub_coil, false);
           }
 
@@ -92,8 +92,6 @@ class RelayService {
         value,
         writeCallback
       );
-
-      logger.debug(`Relay write queued for room ${room} ${relayType}`);
     });
   }
 }

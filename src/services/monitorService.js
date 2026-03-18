@@ -27,7 +27,7 @@ class MonitorService {
    */
   startMonitoring() {
     logger.info('MonitorService: starting...');
-    
+
     // Start command queue polling (handles READ commands @ 500ms)
     commandQueue.startAllPolling();
 
@@ -47,9 +47,9 @@ class MonitorService {
    */
   stopMonitoring() {
     logger.info('MonitorService: stopping...');
-    
+
     commandQueue.stopAllPolling();
-    
+
     if (this.broadcastInterval) {
       clearInterval(this.broadcastInterval);
       this.broadcastInterval = null;
@@ -59,7 +59,9 @@ class MonitorService {
   }
 
   /**
-   * Broadcast room states to WebSocket clients only on change
+   * Broadcast room states to ALL WebSocket clients on every call.
+   * Bandwidth is negligible; always emit ensures frontend is never stale.
+   * Change detection is handled upstream (file writes, notifications) — not here.
    */
   emitStateUpdate() {
     if (!this.io) return;
@@ -68,17 +70,12 @@ class MonitorService {
     const currentCoils = stateManager.getAllCoilStates();
     const queueStatus = commandQueue.getQueueStatus();
 
-    const statePayload = JSON.stringify({ roomStates: currentStates, coilStates: currentCoils, queueStatus });
-    
-    if (this.lastStatePayload !== statePayload) {
-      this.io.emit('roomStateUpdate', {
-        roomStates: currentStates,
-        coilStates: currentCoils,
-        queueStatus,
-        timestamp: new Date().toISOString()
-      });
-      this.lastStatePayload = statePayload;
-    }
+    this.io.emit('roomStateUpdate', {
+      roomStates: currentStates,
+      coilStates: currentCoils,
+      queueStatus,
+      timestamp: new Date().toISOString()
+    });
   }
 
   /**

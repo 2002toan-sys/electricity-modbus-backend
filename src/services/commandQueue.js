@@ -9,6 +9,10 @@ const CONNECTION_ERRORS = [
   'connection to modbus server closed', 'connection lost', 'connection refused'
 ];
 
+// Delay after a WRITE to let PLC settle before next command (prevents ECONNRESET
+// on PLCs that don't support Modbus TCP pipelining, e.g. floor 3 on port 5020)
+
+
 class CommandQueue {
   constructor() {
     this.queues = new Map();       // floor_N -> [commands]
@@ -75,7 +79,6 @@ class CommandQueue {
 
     const command = { type: 'WRITE', floor, commandType, address, value, callback };
     this.queues.get(key).unshift(command); // Priority: front of queue
-    logger.info(`WRITE enqueued for floor ${floor}: ${commandType}(${address})=${value}`);
     this.processQueue(floor);
     return command;
   }
@@ -164,11 +167,11 @@ class CommandQueue {
       if (registerType === 'holding' && startAddress === 100 && result) {
         const [d100, d101] = result;
         const roomsOnFloor = config.getRoomsByFloor(floor);
-        
+
         for (const { room, mapping } of roomsOnFloor) {
           stateManager.updateRoomState(room, d100, d101, mapping);
           stateManager.updateCoilState(room, 'main', !!((d101 >> mapping.y_output_main) & 1));
-          stateManager.updateCoilState(room, 'sub',  !!((d101 >> mapping.y_output_sub)  & 1));
+          stateManager.updateCoilState(room, 'sub', !!((d101 >> mapping.y_output_sub) & 1));
         }
         logger.debug(`READ floor ${floor}: D100=${d100}, D101=${d101}`);
       }
@@ -190,7 +193,7 @@ class CommandQueue {
         throw new Error(`Unknown write type: ${commandType}`);
       }
 
-      logger.debug(`WRITE floor ${floor}: ${commandType}(${address})=${value}`);
+      logger.info(`WRITE floor ${floor}: ${commandType}(${address})=${value}`);
       if (callback) callback(null, result);
       return result;
     } catch (error) {

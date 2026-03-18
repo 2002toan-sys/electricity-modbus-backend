@@ -64,7 +64,7 @@ app.use((err, req, res, next) => {
 // WebSocket connection handler
 io.on('connection', (socket) => {
   logger.info(`Client connected: ${socket.id}`);
-  
+
   socket.on('disconnect', () => {
     logger.info(`Client disconnected: ${socket.id}`);
   });
@@ -83,7 +83,7 @@ const PORT = config.app?.port || 3000;
 async function startServer() {
   try {
     await plcManager.initialize();
-    
+
     monitorService.setSocketIO(io);
     monitorService.startMonitoring();
 

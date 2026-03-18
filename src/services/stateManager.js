@@ -95,7 +95,10 @@ class StateManager {
   }
 
   /**
-   * Update room state from PLC register values with change detection
+   * Update room state from PLC register values.
+   * - Always updates in-memory state so emitted data is always fresh.
+   * - Only triggers logging/notifications when state values actually changed
+   *   (file I/O is expensive; broadcast bandwidth is not).
    */
   updateRoomState(room, d100, d101, mapping) {
     const xInput = !!((d100 >> mapping.x_input) & 1);
@@ -105,15 +108,7 @@ class StateManager {
     const previous = this.roomStates[room];
     const { state, stateName } = this.calculateRoomState(xInput, yOutputMain, yOutputSub);
 
-    // Change detection: only update if something changed
-    const hasChanged = !previous ||
-      previous.state !== state ||
-      previous.x_input !== xInput ||
-      previous.y_output_main !== yOutputMain ||
-      previous.y_output_sub !== yOutputSub;
-
-    if (!hasChanged) return;
-
+    // Always keep in-memory state current so every emit carries the latest values
     this.roomStates[room] = {
       room,
       state,
@@ -124,12 +119,16 @@ class StateManager {
       timestamp: new Date().toISOString()
     };
 
-    // Track state transition for logging/notifications
-    if (previous && previous.stateName !== stateName) {
+    // Change detection: only log/notify/write-file when something actually changed
+    const hasChanged = !previous ||
+      previous.state !== state ||
+      previous.x_input !== xInput ||
+      previous.y_output_main !== yOutputMain ||
+      previous.y_output_sub !== yOutputSub;
+
+    if (hasChanged && previous && previous.stateName !== stateName) {
       this.handleStateTransition(room, mapping.floor, previous.stateName, stateName);
     }
-
-    // Note: monitorService will check this.roomStates to decide if it should emit
   }
 
   /**
