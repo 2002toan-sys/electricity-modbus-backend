@@ -59,7 +59,7 @@ class StateManager {
   /**
    * Load persisted coil states from disk
    */
-  loadCoilStates() {
+   loadCoilStates() {
     try {
       if (existsSync(this.stateFilePath)) {
         const data = readFileSync(this.stateFilePath, 'utf8');

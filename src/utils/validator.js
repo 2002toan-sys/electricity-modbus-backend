@@ -46,3 +46,33 @@ export const validateRelayRequest = (data) => {
 
   return { valid: true };
 };
+
+/**
+ * Validate a comma-separated string of rooms for query params
+ */
+export const validateRoomsList = (query) => {
+  if (!query || !('rooms' in query)) {
+    return { valid: false, error: 'Query không hợp lệ' };
+  }
+
+  const roomsQuery = query.rooms;
+  if (roomsQuery === '') return { valid: true, rooms: [] };
+
+  if (typeof roomsQuery !== 'string') {
+    return { valid: false, error: 'Định dạng tham số rooms không đúng.' };
+  }
+
+  const formatRegex = /^\d+(,\d+)*$/;
+  if (!formatRegex.test(roomsQuery)) {
+    return { valid: false, error: 'Query không hợp lệ' };
+  }
+
+  const rooms = roomsQuery.split(',');
+
+  const invalidRooms = rooms.filter(r => !validateRoomMapping(r));
+  if (invalidRooms.length > 0) {
+    return { valid: false, error: `Lỗi: Các phòng sau không tồn tại: ${invalidRooms.join(', ')}` };
+  }
+  
+  return { valid: true, rooms };
+};

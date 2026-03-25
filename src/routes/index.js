@@ -1,5 +1,5 @@
 import express from 'express';
-import { setMainRelay, setSubRelay } from '../controllers/relayController.js';
+import { setMainRelay, setSubRelay, getMainRelayStatus } from '../controllers/relayController.js';
 import { getRoomStates, getPlcStatus, getStateHistory, updateRoomFromApi } from '../controllers/monitorController.js';
 import { login, verifyToken, logout } from '../controllers/authController.js';
 import { getNotifications, saveNotification, updateNotificationReadStatus, clearAllNotifications } from '../controllers/notificationController.js';
@@ -14,8 +14,10 @@ router.post('/api/auth/logout', authenticate, logout);
 
 // Relay control endpoints
 // Relay control endpoints (authenticate accepts API Key or session)
+router.get('/api/relay/main/get', authenticate, getMainRelayStatus);
 router.post('/api/relay/main/set', authenticate, setMainRelay);
 router.post('/api/relay/sub/set', authenticate, setSubRelay);
+
 
 // Monitor endpoints
 router.get('/api/monitor/rooms', authenticate, getRoomStates);

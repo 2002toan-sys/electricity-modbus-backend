@@ -1,7 +1,8 @@
 import relayService from '../services/relayService.js';
-import { validateRelayRequest } from '../utils/validator.js';
+import { validateRelayRequest, validateRoomsList } from '../utils/validator.js';
 import logger from '../utils/logger.js';
 import config from '../utils/configLoader.js';
+import stateManager from '../services/stateManager.js';
 
 /**
  * POST /api/relay/main/set - Set main relay for rooms
@@ -68,6 +69,39 @@ export const setSubRelay = async (req, res) => {
     }
 
     res.status(200).json(results);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+};
+
+/**
+ * GET /api/relay/main/get - Get main relay status for 1, many or all rooms
+ * Query: ?rooms=201,202 (optional)
+ */
+export const getMainRelayStatus = (req, res) => {
+  try {
+    const validation = validateRoomsList(req.query);
+    if (!validation.valid) {
+      return res.status(400).json({ error: validation.error });
+    }
+
+    const { rooms } = validation;
+    const allRoomStates = stateManager.getAllRoomStates();
+    const result = {};
+
+    if (rooms.length === 0) {
+      // Lấy tất cả
+      Object.keys(allRoomStates).forEach(roomId => {
+        result[roomId] = allRoomStates[roomId].y_output_main ? 'on' : 'off';
+      });
+    } else {
+      // Lấy theo danh sách phòng yêu cầu
+      rooms.forEach(roomId => {
+        result[roomId] = allRoomStates[roomId]?.y_output_main ? 'on' : 'off';
+      });
+    }
+
+    res.status(200).json(result);
   } catch (error) {
     res.status(500).json({ error: error.message });
   }

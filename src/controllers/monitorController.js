@@ -11,7 +11,7 @@ export const getRoomStates = (req, res) => {
   try {
     let roomStates = stateManager.getAllRoomStates();
     let coilStates = stateManager.getAllCoilStates();
-    
+
     // If no room states exist yet, initialize from config
     if (Object.keys(roomStates).length === 0) {
       config.roomMap.forEach((mapping, roomId) => {
@@ -35,7 +35,7 @@ export const getRoomStates = (req, res) => {
         }
       });
     }
-    
+
     // Format data for frontend: map room numbers to mainStatus and subStatus
     const formattedRooms = Object.entries(roomStates).map(([roomId, roomState]) => {
       const coilState = coilStates[roomId] || {};
@@ -83,7 +83,7 @@ export const getPlcStatus = (req, res) => {
 export const getStateHistory = (req, res) => {
   try {
     const { room, limit = 100, startDate, endDate } = req.query;
-    
+
     let history;
     if (startDate && endDate) {
       history = historyLogger.getHistoryByDateRange(room, startDate, endDate);
