@@ -1,0 +1,16 @@
+power.cyborgha.site {
+    # 1. API Requests -> Backend
+    handle /api/* {
+        reverse_proxy modbus-backend:3000
+    }
+
+    # 2. Socket.IO (WebSockets & Polling) -> Backend
+    handle /socket.io/* {
+        reverse_proxy modbus-backend:3000
+    }
+
+    # 3. Mọi request còn lại (Frontend) -> Frontend Service
+    handle {
+        reverse_proxy modbus-frontend:3001
+    }
+}

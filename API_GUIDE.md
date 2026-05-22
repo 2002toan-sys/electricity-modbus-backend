@@ -63,7 +63,7 @@ Hệ thống trả về mảng kết quả tương ứng với số lượng ph�
 ### 2.3. Lấy trạng thái Main Relay (Tối giản)
 Dùng để lấy trực tiếp trạng thái nguồn điện chính ("on"/"off") để đồng bộ.
 
-- **Endpoint**: `GET /relay/main/`
+- **Endpoint**: `GET /relay/main/get`
 - **Query Params (`?rooms=`)**:
   - `?rooms` (không chứa ID): Lấy tất cả.
   - `?rooms=301`: Lấy phòng 301.

@@ -4,11 +4,12 @@ import { getRoomStates, getPlcStatus, getStateHistory, updateRoomFromApi } from 
 import { login, verifyToken, logout } from '../controllers/authController.js';
 import { getNotifications, saveNotification, updateNotificationReadStatus, clearAllNotifications } from '../controllers/notificationController.js';
 import { authenticate } from '../middleware/auth.js';
+import { authLimiter } from '../middleware/rateLimit.js';
 
 const router = express.Router();
 
 // Auth endpoints (public)
-router.post('/api/auth/login', login);
+router.post('/api/auth/login', authLimiter, login);
 router.get('/api/auth/verify', authenticate, verifyToken);
 router.post('/api/auth/logout', authenticate, logout);
 

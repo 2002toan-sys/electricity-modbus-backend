@@ -6,7 +6,7 @@ import logger from '../utils/logger.js';
  */
 export async function login(req, res) {
   try {
-    const { username, password } = req.body;
+    const { username, password, rememberMe } = req.body;
 
     if (!username || !password) {
       return res.status(400).json({ error: 'Username and password required' });
@@ -29,6 +29,12 @@ export async function login(req, res) {
     }
 
     req.session.user = { username: user.username, role: user.role };
+    
+    // Extend session duration if rememberMe is true (30 days)
+    if (rememberMe) {
+      req.session.cookie.maxAge = 30 * 24 * 60 * 60 * 1000;
+    }
+
     logger.info(`User logged in and session created: ${username} (role: ${user.role})`);
 
     res.status(200).json({

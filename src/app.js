@@ -3,6 +3,7 @@ import { createServer } from 'http';
 import { Server } from 'socket.io';
 import session from 'express-session';
 import cors from 'cors';
+import helmet from 'helmet';
 import routes from './routes/index.js';
 import { limiter } from './middleware/rateLimit.js';
 import plcManager from './services/plcManager.js';
@@ -14,9 +15,29 @@ import config from './utils/configLoader.js';
 
 const app = express();
 
-// CORS middleware - allow frontend from any origin with credentials
+// Trust reverse proxy (Caddy/Nginx) so secure cookies work over HTTPS
+app.set('trust proxy', 1);
+
+// Security headers
+app.use(helmet());
+
+// CORS middleware - strictly allow certain origins with credentials
 app.use(cors({
-  origin: true,
+  origin: (origin, callback) => {
+    // Allow requests with no origin (like mobile apps or curl requests)
+    if (!origin) return callback(null, true);
+
+    const isLocal = /^(http|https):\/\/(localhost|127\.0\.0\.1|192\.168\.\d+\.\d+|10\.\d+\.\d+\.\d+|172\.(1[6-9]|2\d|3[0-1])\.\d+\.\d+)(:\d+)?$/.test(origin);
+    const isConfigured = config.app?.frontend_url && origin.startsWith(config.app.frontend_url);
+    const allowedOrigins = config.app?.cors_origins || [];
+    const isAllowedOrigin = allowedOrigins.includes(origin);
+
+    if (isLocal || isConfigured || isAllowedOrigin) {
+      callback(null, true);
+    } else {
+      callback(null, false); // Block CORS
+    }
+  },
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization', 'X-API-Key']
@@ -27,7 +48,13 @@ app.use(session({
   secret: config.auth?.session?.secret || 'change-this-secret',
   resave: false,
   saveUninitialized: false,
-  cookie: { secure: false, httpOnly: true, maxAge: config.auth?.session?.maxAge || 86400000 }
+  proxy: true, // Force express-session to trust the proxy
+  cookie: {
+    secure: process.env.NODE_ENV === 'production',
+    httpOnly: true,
+    sameSite: 'none', // Allow cross-site cookies if API and Frontend are on different domains
+    maxAge: config.auth?.session?.maxAge || 86400000
+  }
 }));
 const httpServer = createServer(app);
 
@@ -36,6 +63,7 @@ httpServer.keepAliveTimeout = config.app?.http_keep_alive_timeout || 60000;
 httpServer.headersTimeout = httpServer.keepAliveTimeout + 1000;
 
 const io = new Server(httpServer, {
+  path: '/socket.io/',
   cors: {
     origin: true,
     methods: ['GET', 'POST'],

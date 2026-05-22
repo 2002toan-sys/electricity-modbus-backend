@@ -1,18 +1,29 @@
-FROM node:20-alpine
+# ─────────────────────────────────────────────
+# Stage 1: Install dependencies
+# ─────────────────────────────────────────────
+FROM node:20-alpine AS deps
 
 WORKDIR /app
 
-# Copy package files
+# Copy only package files first (better layer caching)
 COPY package*.json ./
 
-# Install dependencies
-RUN npm install --production
+# Install production dependencies only (clean install)
+RUN npm ci --omit=dev && npm cache clean --force
+
+# ─────────────────────────────────────────────
+# Stage 2: Production image
+# ─────────────────────────────────────────────
+FROM node:20-alpine AS production
+
+WORKDIR /app
+
+# Copy installed node_modules from deps stage
+COPY --from=deps /app/node_modules ./node_modules
 
 # Copy application source
+COPY package*.json ./
 COPY src ./src
-
-# Create directories for mounted volumes
-RUN mkdir -p /app/data /app/logs /app/src/config
 
 # Expose port
 EXPOSE 3000
@@ -22,4 +33,4 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
     CMD wget -qO- http://localhost:3000/api/status || exit 1
 
 # Start the application
-CMD ["npm", "start"]
+CMD ["node", "src/app.js"]
