@@ -9,10 +9,6 @@ const CONNECTION_ERRORS = [
   'connection to modbus server closed', 'connection lost', 'connection refused'
 ];
 
-// Delay after a WRITE to let PLC settle before next command (prevents ECONNRESET
-// on PLCs that don't support Modbus TCP pipelining, e.g. floor 3 on port 5020)
-
-
 class CommandQueue {
   constructor() {
     this.queues = new Map();       // floor_N -> [commands]
@@ -66,12 +62,13 @@ class CommandQueue {
     const key = `floor_${floor}`;
 
     if (!this.queues.has(key)) {
-      if (callback) callback(new Error(`Floor ${floor} not configured`));
+      const err = new Error(`Floor ${floor} not configured`);
+      if (callback) callback(err);
       return null;
     }
 
     if (this.isPaused.get(key)) {
-      const err = new Error(`Floor ${floor}: Queue paused`);
+      const err = new Error(`Floor ${floor}: Queue paused (PLC disconnected)`);
       logger.warn(err.message);
       if (callback) callback(err);
       return null;
@@ -97,29 +94,41 @@ class CommandQueue {
 
     try {
       while (queue.length > 0) {
-        const connected = await this._waitForConnection(floor);
+        // Chờ kết nối tối đa 60s
+        const connected = await this._waitForConnection(floor, 60000);
         if (!connected) {
-          logger.warn(`Floor ${floor}: Connection timeout, pausing queue`);
+          logger.warn(`Floor ${floor}: Connection timeout (60s), pausing queue`);
           this.isPaused.set(key, true);
+          
+          // Trả lỗi ngay lập tức cho các lệnh WRITE đang chờ trong queue để client không bị treo
+          while (queue.length > 0) {
+            const cmd = queue.shift();
+            if (cmd.type === 'WRITE' && cmd.callback) {
+              cmd.callback(new Error(`Floor ${floor} PLC is disconnected (timeout after 60s)`));
+            }
+          }
           break;
         }
 
         const command = queue.shift();
         try {
-          await this._execute(command);
-
+          const result = await this._execute(command);
+          if (command.type === 'WRITE' && command.callback) {
+            command.callback(null, result);
+          }
         } catch (error) {
           logger.error(`Floor ${floor}: ${command.type} error: ${error.message}`);
+
+          // Đảm bảo callback của lệnh WRITE luôn được gọi khi có lỗi
+          if (command.type === 'WRITE' && command.callback) {
+            command.callback(error);
+          }
 
           if (this._isConnectionError(error)) {
             const entry = plcManager.clients?.get(key);
             if (entry) entry.connected = false;
             this.isPaused.set(key, true);
             break;
-          }
-
-          if (command.type === 'WRITE' && command.callback) {
-            command.callback(error);
           }
         }
       }
@@ -182,7 +191,7 @@ class CommandQueue {
     }
   }
 
-  async _executeWrite({ floor, commandType, address, value, callback }) {
+  async _executeWrite({ floor, commandType, address, value }) {
     try {
       let result;
       if (commandType === 'writeCoil') {
@@ -194,11 +203,9 @@ class CommandQueue {
       }
 
       logger.info(`WRITE floor ${floor}: ${commandType}(${address})=${value}`);
-      if (callback) callback(null, result);
       return result;
     } catch (error) {
       logger.error(`WRITE failed for floor ${floor}: ${error.message}`);
-      if (callback) callback(error);
       throw error;
     }
   }

@@ -1,7 +1,8 @@
-import { appendFileSync, readFileSync, existsSync, mkdirSync, writeFileSync } from 'fs';
+import { writeFileSync, appendFileSync, existsSync, mkdirSync } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import logger from '../utils/logger.js';
+import db from '../database/db.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -11,6 +12,35 @@ class NotificationLogger {
     this.notificationsFile = join(__dirname, '../../data/notifications.csv');
     this.ensureDataDir();
     this.initCSVHeader();
+    this._initPreparedStatements();
+  }
+
+  _initPreparedStatements() {
+    try {
+      this.insertStmt = db.prepare(`
+        INSERT OR REPLACE INTO notifications (id, room_number, message, state_name, timestamp, is_read)
+        VALUES (@id, @room_number, @message, @state_name, @timestamp, @is_read)
+      `);
+
+      this.selectAllStmt = db.prepare(`
+        SELECT id, room_number, message, state_name, timestamp, is_read
+        FROM notifications
+        ORDER BY timestamp DESC
+        LIMIT ?
+      `);
+
+      this.updateReadStmt = db.prepare(`
+        UPDATE notifications
+        SET is_read = ?
+        WHERE id = ?
+      `);
+
+      this.deleteAllStmt = db.prepare(`
+        DELETE FROM notifications
+      `);
+    } catch (err) {
+      logger.error(`NotificationLogger prepared statements error: ${err.message}`);
+    }
   }
 
   ensureDataDir() {
@@ -29,106 +59,92 @@ class NotificationLogger {
   }
 
   /**
-   * Save notification to CSV
+   * Save notification to SQLite (and CSV fallback)
    */
   saveNotification(notification) {
     try {
       const { id, room, message, stateName, timestamp, read } = notification;
-      
-      // Escape quotes in message
-      const escapedMessage = (message || '').replace(/"/g, '""');
-      const escapedStatus = (stateName || '').replace(/"/g, '""');
-      
-      const row = `${id},"${room}","${escapedMessage}","${escapedStatus}","${timestamp}",${read ? 1 : 0}\n`;
-      
-      appendFileSync(this.notificationsFile, row);
-      logger.debug(`Notification saved: Room ${room}`);
+      const notifId = id ? id.toString() : Date.now().toString();
+      const time = timestamp || new Date().toISOString();
+      const isRead = read ? 1 : 0;
+      const roomStr = (room || '').toString();
+
+      // 1. Lưu vào SQLite
+      this.insertStmt.run({
+        id: notifId,
+        room_number: roomStr,
+        message: message || '',
+        state_name: stateName || '',
+        timestamp: time,
+        is_read: isRead
+      });
+
+      // 2. Lưu vào file CSV (fallback)
+      try {
+        const escapedMessage = (message || '').replace(/"/g, '""');
+        const escapedStatus = (stateName || '').replace(/"/g, '""');
+        const row = `${notifId},"${roomStr}","${escapedMessage}","${escapedStatus}","${time}",${isRead}\n`;
+        appendFileSync(this.notificationsFile, row);
+      } catch { /* ignore csv error */ }
+
+      logger.debug(`Notification saved to SQLite: Room ${room}`);
+      return { id: notifId, room: roomStr, message, stateName, timestamp: time, read: Boolean(isRead) };
     } catch (error) {
       logger.error(`Failed to save notification: ${error.message}`);
+      return null;
     }
   }
 
   /**
-   * Load all notifications from CSV
+   * Load notifications from SQLite
    */
-  loadNotifications() {
+  loadNotifications(limit = 100) {
     try {
-      if (!existsSync(this.notificationsFile)) {
-        return [];
-      }
-
-      const data = readFileSync(this.notificationsFile, 'utf8');
-      const lines = data.trim().split('\n');
-      
-      // Skip header
-      const notifications = lines.slice(1).map(line => {
-        const match = line.match(/^(.+?),"(.+?)","(.+?)","(.+?)","(.+?)",(\d)/);
-        if (!match) return null;
-        
-        return {
-          id: match[1],
-          room: match[2],
-          message: match[3],
-          stateName: match[4],
-          timestamp: match[5],
-          read: match[6] === '1'
-        };
-      }).filter(notif => notif !== null);
-
-      return notifications;
+      const rows = this.selectAllStmt.all(limit);
+      return rows.map(r => ({
+        id: r.id,
+        room: r.room_number,
+        message: r.message,
+        stateName: r.state_name,
+        timestamp: r.timestamp,
+        read: Boolean(r.is_read)
+      }));
     } catch (error) {
-      logger.error(`Failed to load notifications: ${error.message}`);
+      logger.error(`Failed to load notifications from SQLite: ${error.message}`);
       return [];
     }
   }
 
   /**
-   * Update notification read status in CSV
+   * Update notification read status in SQLite
    */
   updateNotificationReadStatus(notificationId, read) {
     try {
-      const notifications = this.loadNotifications();
-      const updated = notifications.map(n => 
-        n.id === notificationId ? { ...n, read } : n
-      );
-      
-      // Rewrite entire file
-      this.rewriteNotifications(updated);
-      logger.debug(`Notification ${notificationId} updated`);
+      this.updateReadStmt.run(read ? 1 : 0, notificationId.toString());
+      logger.debug(`Notification ${notificationId} updated in SQLite (read: ${read})`);
+      return true;
     } catch (error) {
-      logger.error(`Failed to update notification: ${error.message}`);
+      logger.error(`Failed to update notification in SQLite: ${error.message}`);
+      return false;
     }
   }
 
   /**
-   * Clear all notifications
+   * Clear all notifications in SQLite and CSV
    */
   clearAllNotifications() {
     try {
-      this.initCSVHeader(); // Reset with just header
-      logger.debug('All notifications cleared');
+      this.deleteAllStmt.run();
+      
+      // Reset CSV file
+      const header = 'id,room,message,stateName,timestamp,read\n';
+      writeFileSync(this.notificationsFile, header);
+
+      logger.info('All notifications cleared from SQLite & CSV');
+      return true;
     } catch (error) {
       logger.error(`Failed to clear notifications: ${error.message}`);
-    }
-  }
-
-  /**
-   * Rewrite entire notifications file
-   */
-  rewriteNotifications(notifications) {
-    try {
-      let content = 'id,room,message,stateName,timestamp,read\n';
-      
-      notifications.forEach(notif => {
-        const escapedMessage = (notif.message || '').replace(/"/g, '""');
-        const escapedStatus = (notif.stateName || '').replace(/"/g, '""');
-        content += `${notif.id},"${notif.room}","${escapedMessage}","${escapedStatus}","${notif.timestamp}",${notif.read ? 1 : 0}\n`;
-      });
-      
-      writeFileSync(this.notificationsFile, content);
-      logger.debug('Notifications file rewritten');
-    } catch (error) {
-      logger.error(`Failed to rewrite notifications: ${error.message}`);
+      return false;
     }
   }
 }

@@ -41,16 +41,16 @@ export const setMainRelay = async (req, res) => {
 
 /**
  * POST /api/relay/sub/set - Set sub relay for rooms
- * B// Check if write relay is enabled
-    if (!config.app?.write_relay_enabled) {
-      return res.status(503).json({ error: 'Write relay functionality is currently disabled' });
-    }
-
-    ody: [{ room: "201", set: "on" }, ...]
+ * Body: [{ room: "201", set: "on" }, ...]
  * Response: [{ room: "201", status: "on", type: "sub", time: "..." }, ...]
  */
 export const setSubRelay = async (req, res) => {
   try {
+    // Check if write relay is enabled
+    if (!config.app?.write_relay_enabled) {
+      return res.status(503).json({ error: 'Write relay functionality is currently disabled' });
+    }
+
     const validation = validateRelayRequest(req.body);
     if (!validation.valid) {
       return res.status(400).json({ error: validation.error });

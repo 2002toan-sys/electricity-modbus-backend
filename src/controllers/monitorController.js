@@ -73,27 +73,32 @@ export const getPlcStatus = (req, res) => {
 };
 
 /**
- * GET /api/monitor/history - Get state history
+ * GET /api/monitor/history - Get state history with filtering and pagination
  * Query params:
  *   - room: optional room number to filter
- *   - limit: number of records (default 100)
+ *   - state: optional new state to filter
  *   - startDate: optional ISO date string
  *   - endDate: optional ISO date string
+ *   - page: page number (default 1)
+ *   - limit: number of records per page (default 20)
  */
 export const getStateHistory = (req, res) => {
   try {
-    const { room, limit = 100, startDate, endDate } = req.query;
+    const { room, limit = 20, page = 1, startDate, endDate, state } = req.query;
 
-    let history;
-    if (startDate && endDate) {
-      history = historyLogger.getHistoryByDateRange(room, startDate, endDate);
-    } else {
-      history = historyLogger.getHistory(room, parseInt(limit));
-    }
+    const result = historyLogger.getHistory({
+      room,
+      startDate,
+      endDate,
+      state,
+      page: parseInt(page) || 1,
+      limit: parseInt(limit) || 20
+    });
 
     res.status(200).json({
       success: true,
-      data: history,
+      data: result.records,
+      pagination: result.pagination,
       timestamp: new Date().toISOString()
     });
   } catch (error) {
@@ -103,14 +108,6 @@ export const getStateHistory = (req, res) => {
 
 /**
  * POST /api/monitor/update-room
- * Body options:
- *  - room: required (string or number)
- *  - d100, d101: optional numeric register values
- *  - xInput, yMain, ySub: optional booleans/0|1 to set individual bits
- *
- * This endpoint allows a client to push a simulated/actual input change for a room.
- * It will update the server-side room state via `stateManager.updateRoomState` and
- * then broadcast the new state to connected Socket.IO clients using monitorService.
  */
 export const updateRoomFromApi = (req, res) => {
   try {

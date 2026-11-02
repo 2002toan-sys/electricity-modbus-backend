@@ -5,33 +5,92 @@ import logger from '../utils/logger.js';
 import historyLogger from './historyLogger.js';
 import notificationService from './notificationService.js';
 import config from '../utils/configLoader.js';
+import db from '../database/db.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
 /**
  * StateManager: Manages room states (input from PLC) and relay coil states (output to PLC)
- * - Room states: Updated from polling D100/D101 registers (read-only in this scope)
- * - Coil states: Updated from write APIs, persisted to disk
+ * - In-memory cache for ultra-fast O(1) reads
+ * - Persisted to SQLite table `room_current_states` and disk fallback `data/state.json`
  */
 class StateManager {
   constructor() {
     this.stateFilePath = join(__dirname, '../../data/state.json');
     this.ensureDataDir();
 
-    // In-memory room states (from PLC input x, output main/sub)
-    this.roomStates = {};
+    // Prepare SQLite statements
+    this._initPreparedStatements();
 
-    // Persisted coil states (what we sent to PLC)
-    this.coilStates = this.loadCoilStates();
-
-    // Generate lookup map for O(1) calculateRoomState: "x-y-ySub" -> { state, stateName }
+    // Lookup map for O(1) calculateRoomState: "x-y-ySub" -> { state, stateName }
     this.stateLookup = this._initStateLookup();
+
+    // In-memory room states and coil states loaded from SQLite
+    this.roomStates = {};
+    this.coilStates = {};
+    this._loadInitialStates();
   }
 
-  /**
-   * Initialize state lookup table from static definitions
-   */
+  _initPreparedStatements() {
+    try {
+      this.updateRoomStateStmt = db.prepare(`
+        UPDATE room_current_states
+        SET state = @state,
+            state_name = @stateName,
+            x_input = @xInput,
+            y_output_main = @yOutputMain,
+            y_output_sub = @yOutputSub,
+            last_updated = datetime('now')
+        WHERE room_number = @room
+      `);
+
+      this.updateMainCoilStmt = db.prepare(`
+        UPDATE room_current_states
+        SET main_relay_status = ?, last_updated = datetime('now')
+        WHERE room_number = ?
+      `);
+
+      this.updateSubCoilStmt = db.prepare(`
+        UPDATE room_current_states
+        SET sub_relay_status = ?, last_updated = datetime('now')
+        WHERE room_number = ?
+      `);
+
+      this.loadAllStmt = db.prepare(`SELECT * FROM room_current_states`);
+    } catch (err) {
+      logger.error(`StateManager prepared statements error: ${err.message}`);
+    }
+  }
+
+  _loadInitialStates() {
+    try {
+      const rows = this.loadAllStmt.all();
+      for (const row of rows) {
+        const room = row.room_number;
+        this.roomStates[room] = {
+          room,
+          state: row.state,
+          stateName: row.state_name || 'Trống',
+          x_input: Boolean(row.x_input),
+          y_output_main: Boolean(row.y_output_main),
+          y_output_sub: Boolean(row.y_output_sub),
+          timestamp: row.last_updated || new Date().toISOString()
+        };
+
+        this.coilStates[room] = {
+          y_output_main: Boolean(row.main_relay_status),
+          y_output_sub: Boolean(row.sub_relay_status),
+          timestamp: row.last_updated || new Date().toISOString()
+        };
+      }
+      logger.info(`StateManager: Loaded ${rows.length} room states from SQLite`);
+    } catch (error) {
+      logger.warn(`StateManager SQLite load failed, falling back to disk: ${error.message}`);
+      this.coilStates = this.loadCoilStates();
+    }
+  }
+
   _initStateLookup() {
     const lookup = {};
     const definitions = {
@@ -56,10 +115,7 @@ class StateManager {
     }
   }
 
-  /**
-   * Load persisted coil states from disk
-   */
-   loadCoilStates() {
+  loadCoilStates() {
     try {
       if (existsSync(this.stateFilePath)) {
         const data = readFileSync(this.stateFilePath, 'utf8');
@@ -67,39 +123,26 @@ class StateManager {
         return parsed.coils || {};
       }
     } catch (error) {
-      logger.error(`Failed to load coil states: ${error.message}`);
+      logger.error(`Failed to load coil states from JSON: ${error.message}`);
     }
     return {};
   }
 
-  /**
-   * Save coil states to disk (called after successful write API)
-   */
   saveCoilStates() {
     try {
       const payload = { coils: this.coilStates };
       writeFileSync(this.stateFilePath, JSON.stringify(payload, null, 2));
-      logger.debug('Coil states saved to disk');
+      logger.debug('Coil states saved to disk fallback');
     } catch (error) {
-      logger.error(`Failed to save coil states: ${error.message}`);
+      logger.error(`Failed to save coil states to JSON: ${error.message}`);
     }
   }
 
-
-  /**
-   * Calculate room state based on input/output logic (O(1) lookup)
-   */
   calculateRoomState(x, y, ySub) {
     const key = `${!!x}-${!!y}-${!!ySub}`;
     return this.stateLookup[key] || { state: -1, stateName: 'Unknown' };
   }
 
-  /**
-   * Update room state from PLC register values.
-   * - Always updates in-memory state so emitted data is always fresh.
-   * - Only triggers logging/notifications when state values actually changed
-   *   (file I/O is expensive; broadcast bandwidth is not).
-   */
   updateRoomState(room, d100, d101, mapping) {
     const xInput = !!((d100 >> mapping.x_input) & 1);
     const yOutputMain = !!((d101 >> mapping.y_output_main) & 1);
@@ -108,7 +151,7 @@ class StateManager {
     const previous = this.roomStates[room];
     const { state, stateName } = this.calculateRoomState(xInput, yOutputMain, yOutputSub);
 
-    // Always keep in-memory state current so every emit carries the latest values
+    // Keep in-memory state current
     this.roomStates[room] = {
       room,
       state,
@@ -119,27 +162,39 @@ class StateManager {
       timestamp: new Date().toISOString()
     };
 
-    // Change detection: only log/notify/write-file when something actually changed
+    // Change detection: only log/notify/write-db when changed
     const hasChanged = !previous ||
       previous.state !== state ||
       previous.x_input !== xInput ||
       previous.y_output_main !== yOutputMain ||
       previous.y_output_sub !== yOutputSub;
 
-    if (hasChanged && previous && previous.stateName !== stateName) {
-      this.handleStateTransition(room, mapping.floor, previous.stateName, stateName);
+    if (hasChanged) {
+      // Persist to SQLite
+      try {
+        this.updateRoomStateStmt.run({
+          room: room.toString(),
+          state,
+          stateName,
+          xInput: xInput ? 1 : 0,
+          yOutputMain: yOutputMain ? 1 : 0,
+          yOutputSub: yOutputSub ? 1 : 0
+        });
+      } catch (err) {
+        logger.error(`Failed to update room state in SQLite for room ${room}: ${err.message}`);
+      }
+
+      if (previous && previous.stateName !== stateName) {
+        this.handleStateTransition(room, mapping.floor, previous.stateName, stateName);
+      }
     }
   }
 
-  /**
-   * Handle state transition: log to CSV and send notifications
-   */
   handleStateTransition(room, floor, previousStateName, newStateName) {
     try {
-      // Generate message
       const message = notificationService.generateMessage(room, previousStateName, newStateName);
 
-      // Log to CSV history
+      // Log to history
       historyLogger.logStateChange(room, floor, previousStateName, newStateName, message);
 
       // Send notifications (Telegram, Email, WebSocket)
@@ -151,23 +206,14 @@ class StateManager {
     }
   }
 
-  /**
-   * Get room state (current PLC inputs/outputs)
-   */
   getRoomState(room) {
     return this.roomStates[room] || null;
   }
 
-  /**
-   * Get all room states
-   */
   getAllRoomStates() {
     return this.roomStates;
   }
 
-  /**
-   * Update coil state after successful write with change detection
-   */
   updateCoilState(room, relayType, value) {
     const boolValue = !!value;
     const current = this.coilStates[room] || { y_output_main: null, y_output_sub: null };
@@ -182,28 +228,32 @@ class StateManager {
 
       if (relayType === 'main') {
         this.coilStates[room].y_output_main = boolValue;
+        try {
+          this.updateMainCoilStmt.run(boolValue ? 1 : 0, room.toString());
+        } catch (err) {
+          logger.error(`Failed to update main coil in SQLite for room ${room}: ${err.message}`);
+        }
       } else {
         this.coilStates[room].y_output_sub = boolValue;
+        try {
+          this.updateSubCoilStmt.run(boolValue ? 1 : 0, room.toString());
+        } catch (err) {
+          logger.error(`Failed to update sub coil in SQLite for room ${room}: ${err.message}`);
+        }
       }
 
       this.coilStates[room].timestamp = new Date().toISOString();
       this.saveCoilStates();
-      return true; // Indicating change
+      return true;
     }
 
     return false;
   }
 
-  /**
-   * Get coil state for a room
-   */
   getCoilState(room) {
     return this.coilStates[room] || null;
   }
 
-  /**
-   * Get all coil states
-   */
   getAllCoilStates() {
     return this.coilStates;
   }

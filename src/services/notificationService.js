@@ -2,6 +2,7 @@ import axios from 'axios';
 import nodemailer from 'nodemailer';
 import logger from '../utils/logger.js';
 import config from '../utils/configLoader.js';
+import notificationLogger from './notificationLogger.js';
 import { EventEmitter } from 'events';
 
 class NotificationService extends EventEmitter {
@@ -59,27 +60,42 @@ class NotificationService extends EventEmitter {
     try {
       logger.debug(`Notification: Room ${room} - ${message}`);
 
-      // Get current coil states for payload
+      // 1. Lưu thông báo ngay vào Database trên Backend
+      const notifId = Date.now().toString();
+      const timestamp = new Date().toISOString();
+      notificationLogger.saveNotification({
+        id: notifId,
+        room,
+        message,
+        stateName: newState,
+        timestamp,
+        read: false
+      });
+
+      // 2. Lấy trạng thái coil hiện tại cho payload
       const stateManager = (await import('./stateManager.js')).default;
       const coilState = stateManager.getCoilState(room) || {};
 
-      // Broadcast via WebSocket
+      // 3. Broadcast qua WebSocket với đầy đủ id đã lưu
       this.emit('state-change', {
+        id: notifId,
         room,
         previousState,
         newState,
+        stateName: newState,
         message,
         mainStatus: coilState.y_output_main || false,
         subStatus: coilState.y_output_sub || false,
-        timestamp: new Date().toISOString()
+        timestamp,
+        read: false
       });
 
-      // Queue Telegram message (1 per second)
+      // 4. Queue Telegram message (1 per second)
       if (this.telegramEnabled) {
         this.queueTelegram(message);
       }
 
-      // Send email
+      // 5. Send email
       if (this.emailEnabled) {
         await this.sendEmail(room, message);
       }

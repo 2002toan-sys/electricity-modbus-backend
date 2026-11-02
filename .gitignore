@@ -35,6 +35,7 @@ Thumbs.db
 # Data and temporary files
 data/*.json
 data/*.csv
+data/*.db*
 .tmp/
 temp/
 

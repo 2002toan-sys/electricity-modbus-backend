@@ -4,8 +4,10 @@ import { Server } from 'socket.io';
 import session from 'express-session';
 import cors from 'cors';
 import helmet from 'helmet';
+import db from './database/db.js';
 import routes from './routes/index.js';
 import { limiter } from './middleware/rateLimit.js';
+import { errorHandler } from './middleware/errorHandler.js';
 import plcManager from './services/plcManager.js';
 import monitorService from './services/monitorService.js';
 import commandQueue from './services/commandQueue.js';
@@ -50,12 +52,18 @@ app.use(session({
   saveUninitialized: false,
   proxy: true, // Force express-session to trust the proxy
   cookie: {
-    secure: process.env.NODE_ENV === 'production',
+    secure: 'auto',
     httpOnly: true,
-    sameSite: 'none', // Allow cross-site cookies if API and Frontend are on different domains
+    sameSite: 'lax',
     maxAge: config.auth?.session?.maxAge || 86400000
   }
 }));
+app.use((req, res, next) => {
+  if (req.session) {
+    req.session.cookie.sameSite = req.secure ? 'none' : 'lax';
+  }
+  next();
+});
 const httpServer = createServer(app);
 
 // Configure HTTP Keep-Alive
@@ -89,6 +97,9 @@ app.use((err, req, res, next) => {
   return next(err);
 });
 
+// Centralized error handler
+app.use(errorHandler);
+
 // WebSocket connection handler
 io.on('connection', (socket) => {
   logger.info(`Client connected: ${socket.id}`);
@@ -103,8 +114,6 @@ notificationService.on('state-change', (notification) => {
   io.emit('state-changed', notification);
   logger.debug(`Broadcasted state change: Room ${notification.room} → ${notification.newState}`);
 });
-
-// Note: Interlock logic is now handled directly in relayService.js via commandQueue
 
 const PORT = config.app?.port || 3000;
 
@@ -129,6 +138,9 @@ process.on('SIGINT', async () => {
   monitorService.destroy();
   commandQueue.destroy();
   await plcManager.destroy();
+  try {
+    db.close();
+  } catch { /* ignore */ }
   process.exit(0);
 });
 
