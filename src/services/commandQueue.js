@@ -24,12 +24,31 @@ class CommandQueue {
 
   _initFloors() {
     for (const { floor } of config.plcs) {
-      const key = `floor_${floor}`;
-      this.queues.set(key, []);
-      this.isProcessing.set(key, false);
-      this.isPaused.set(key, false);
+      this.addFloor(floor);
     }
     logger.info(`CommandQueue initialized for ${config.plcs.length} floors`);
+  }
+
+  addFloor(floor) {
+    const key = `floor_${floor}`;
+    if (this.queues.has(key)) return;
+    this.queues.set(key, []);
+    this.isProcessing.set(key, false);
+    this.isPaused.set(key, false);
+  }
+
+  removeFloor(floor) {
+    const key = `floor_${floor}`;
+    this.stopReadPolling(floor);
+    const queue = this.queues.get(key) || [];
+    const error = new Error(`Floor ${floor} PLC was removed`);
+    for (const command of queue) {
+      if (command.type === 'WRITE' && command.callback) command.callback(error);
+    }
+    queue.length = 0;
+    this.queues.delete(key);
+    this.isProcessing.delete(key);
+    this.isPaused.delete(key);
   }
 
   // ─── Enqueue READ ──────────────────────────────────────────────────────────
@@ -98,7 +117,7 @@ class CommandQueue {
         const connected = await this._waitForConnection(floor, 60000);
         if (!connected) {
           logger.warn(`Floor ${floor}: Connection timeout (60s), pausing queue`);
-          this.isPaused.set(key, true);
+          if (this.queues.has(key)) this.isPaused.set(key, true);
           
           // Trả lỗi ngay lập tức cho các lệnh WRITE đang chờ trong queue để client không bị treo
           while (queue.length > 0) {
@@ -133,13 +152,14 @@ class CommandQueue {
         }
       }
     } finally {
-      this.isProcessing.set(key, false);
+      if (this.queues.has(key)) this.isProcessing.set(key, false);
     }
   }
 
   async _waitForConnection(floor, maxWait = 60000) {
     const interval = 1000;
     for (let elapsed = 0; elapsed < maxWait; elapsed += interval) {
+      if (!this.queues.has(`floor_${floor}`)) return false;
       if (plcManager.getConnectionStatus(floor).connected) return true;
       await this._sleep(interval);
     }
@@ -234,6 +254,31 @@ class CommandQueue {
       clearTimeout(timer);
       this.readTimers.delete(key);
       logger.info(`Stopped READ polling for floor ${floor}`);
+    }
+  }
+
+  refreshFloorPolling(floor) {
+    this.stopReadPolling(floor);
+    const queue = this.queues.get(`floor_${floor}`);
+    if (queue) {
+      for (let index = queue.length - 1; index >= 0; index -= 1) {
+        if (queue[index].type === 'READ') queue.splice(index, 1);
+      }
+    }
+
+    const plcConfig = config.getPLCConfig(floor);
+    if (!plcConfig) return;
+
+    const registers = plcConfig.dataRegisters || { startAddress: 100, count: 2 };
+    this.startReadPolling(floor, registers.startAddress, registers.count);
+  }
+
+  updatePollingInterval(interval) {
+    this.readInterval = interval;
+    const floors = [...this.readTimers.keys()]
+      .map((key) => Number(key.slice('floor_'.length)));
+    for (const floor of floors) {
+      this.refreshFloorPolling(floor);
     }
   }
 

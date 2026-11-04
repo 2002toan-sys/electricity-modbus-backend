@@ -1,7 +1,7 @@
 services:
   modbus-backend:
     # Image name on Docker Hub
-    image: nguyenvietanh10326/hotel-modbus-backend:latest
+    image: nguyenvietanh10326/hotel-modbus-backend:v11
 
     # Allows local building using the Dockerfile in this directory
     build:
@@ -17,19 +17,13 @@ services:
       # Host port : Container port
       - "3000:3000"
 
-    # Bind mounts: map host directories directly into container
+    # Persist SQLite data and optional file logs outside the container.
     volumes:
-      - /home/hotel-modbus-backend-v2/data:/app/data
-      - /home/hotel-modbus-backend-v2/logs:/app/logs
-      - /home/hotel-modbus-backend-v2/config:/app/src/config
+      - "${BACKEND_DATA_DIR}:/app/data"
+      - "${BACKEND_LOGS_DIR}:/app/logs"
 
-    # Load environment variables from .env file
     env_file:
       - .env
-
-    # Environment variable overrides
-    environment:
-      - NODE_ENV=production
 
     networks:
       - my_global_network

@@ -37,10 +37,18 @@ export const getRoomStates = (req, res) => {
     }
 
     // Format data for frontend: map room numbers to mainStatus and subStatus
-    const formattedRooms = Object.entries(roomStates).map(([roomId, roomState]) => {
+    const formattedRooms = [...config.roomMap.entries()].map(([roomId, mapping]) => {
+      const roomState = roomStates[roomId] || {
+        state: 0,
+        stateName: 'Trống',
+        x_input: false,
+        timestamp: new Date().toISOString()
+      };
       const coilState = coilStates[roomId] || {};
       return {
         room: parseInt(roomId) || roomId,
+        floor: mapping.floor,
+        show_in_ui: mapping.show_in_ui,
         mainStatus: coilState.y_output_main || false,
         subStatus: coilState.y_output_sub || false,
         state: roomState.state,
@@ -77,6 +85,7 @@ export const getPlcStatus = (req, res) => {
  * Query params:
  *   - room: optional room number to filter
  *   - state: optional new state to filter
+ *   - search: optional text search across room, state names, message, and source
  *   - startDate: optional ISO date string
  *   - endDate: optional ISO date string
  *   - page: page number (default 1)
@@ -84,13 +93,17 @@ export const getPlcStatus = (req, res) => {
  */
 export const getStateHistory = (req, res) => {
   try {
-    const { room, limit = 20, page = 1, startDate, endDate, state } = req.query;
+    const { room, limit = 20, page = 1, startDate, endDate, state, search } = req.query;
+    if (typeof search === 'string' && search.length > 100) {
+      return res.status(400).json({ error: 'Search query cannot exceed 100 characters' });
+    }
 
     const result = historyLogger.getHistory({
       room,
       startDate,
       endDate,
       state,
+      search,
       page: parseInt(page) || 1,
       limit: parseInt(limit) || 20
     });

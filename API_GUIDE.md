@@ -109,10 +109,20 @@ Dùng để lấy trạng thái thực tế của các phòng và Relay tại kh
 
 ## 4. Quy trình tích hợp & Đồng bộ
 
+### Tên trạng thái phòng
+
+| Mã | Tên | Mô tả |
+|---|---|---|
+| 0 | Trống | Chưa có khách; relay chính và phụ tắt |
+| 1 | Chờ khách | Relay chính bật; chưa phát hiện khách |
+| 2 | Có khách | Đã phát hiện khách; relay chính bật |
+| 3 | Bật cưỡng bức | Khách trong phòng; relay phụ được bật cưỡng bức |
+| 4 | Bảo trì | Tín hiệu phòng ở trạng thái bảo trì |
+
 ### 4.1. Nguyên tắc điều khiển
 1. **Request trực tiếp**: Skyhotel gọi thẳng đến Endpoint tại khách sạn từ máy khách (Client) hoặc Server PMS.
 2. **Kịch bản điều khiển**:
-   - Chỉ gọi API **mở điện khi Check-in** và **tắt điện khi Check-out**.
+   - Chỉ gọi API **mở điện khi khách Check-in** và **tắt điện khi Check-out**.
    - **KHÔNG** gọi API khi nhân viên set khách ra ngoài/khách quay lại 
 
 ### 4.2. Hỗ trợ Đồng bộ (Sync)
@@ -124,4 +134,3 @@ Nhờ đội ngũ kỹ thuật Skyhotel hỗ trợ tạo một **Nút bấm** tr
 3. Việc này giúp đảm bảo hệ thống điện luôn khớp với trạng thái thực tế trên PMS.
 
 ---
-

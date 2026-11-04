@@ -106,6 +106,43 @@ class PLCManager {
     this.reconnectTimers.set(key, timer);
   }
 
+  async reconfigurePLC(plcConfig) {
+    const key = `floor_${plcConfig.floor}`;
+    const reconnectTimer = this.reconnectTimers.get(key);
+    if (reconnectTimer) clearTimeout(reconnectTimer);
+    this.reconnectTimers.delete(key);
+    this.isReconnecting.delete(key);
+    this.reconnectDelays.delete(key);
+
+    const existing = this.clients.get(key);
+    if (existing?.socket) this._destroySocket(existing.socket);
+    this.clients.delete(key);
+
+    const queue = await getCommandQueue();
+    queue?.addFloor(plcConfig.floor);
+    queue?.refreshFloorPolling(plcConfig.floor);
+
+    logger.info(`PLC Floor ${plcConfig.floor}: applying updated connection settings`);
+    this.connectPLC(plcConfig);
+    return { floor: plcConfig.floor, status: 'reconnecting' };
+  }
+
+  async disconnectPLC(floor) {
+    const key = `floor_${floor}`;
+    const reconnectTimer = this.reconnectTimers.get(key);
+    if (reconnectTimer) clearTimeout(reconnectTimer);
+    this.reconnectTimers.delete(key);
+    this.isReconnecting.delete(key);
+    this.reconnectDelays.delete(key);
+
+    const existing = this.clients.get(key);
+    if (existing?.socket) this._destroySocket(existing.socket);
+    this.clients.delete(key);
+
+    const queue = await getCommandQueue();
+    queue?.removeFloor(floor);
+  }
+
   _destroySocket(socket) {
     try {
       socket.removeAllListeners();

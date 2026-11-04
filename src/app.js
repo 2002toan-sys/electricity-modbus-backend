@@ -1,7 +1,6 @@
 import express from 'express';
 import { createServer } from 'http';
 import { Server } from 'socket.io';
-import session from 'express-session';
 import cors from 'cors';
 import helmet from 'helmet';
 import db from './database/db.js';
@@ -14,16 +13,16 @@ import commandQueue from './services/commandQueue.js';
 import notificationService from './services/notificationService.js';
 import logger from './utils/logger.js';
 import config from './utils/configLoader.js';
+import authService from './services/authService.js';
 
 const app = express();
 
-// Trust reverse proxy (Caddy/Nginx) so secure cookies work over HTTPS
 app.set('trust proxy', 1);
 
 // Security headers
 app.use(helmet());
 
-// CORS middleware - strictly allow certain origins with credentials
+// CORS middleware - allow configured frontend origins.
 app.use(cors({
   origin: (origin, callback) => {
     // Allow requests with no origin (like mobile apps or curl requests)
@@ -40,30 +39,10 @@ app.use(cors({
       callback(null, false); // Block CORS
     }
   },
-  credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization', 'X-API-Key']
 }));
 
-// Session middleware (simple in-memory store - suitable for small deployments)
-app.use(session({
-  secret: config.auth?.session?.secret || 'change-this-secret',
-  resave: false,
-  saveUninitialized: false,
-  proxy: true, // Force express-session to trust the proxy
-  cookie: {
-    secure: 'auto',
-    httpOnly: true,
-    sameSite: 'lax',
-    maxAge: config.auth?.session?.maxAge || 86400000
-  }
-}));
-app.use((req, res, next) => {
-  if (req.session) {
-    req.session.cookie.sameSite = req.secure ? 'none' : 'lax';
-  }
-  next();
-});
 const httpServer = createServer(app);
 
 // Configure HTTP Keep-Alive
@@ -74,8 +53,7 @@ const io = new Server(httpServer, {
   path: '/socket.io/',
   cors: {
     origin: true,
-    methods: ['GET', 'POST'],
-    credentials: true
+    methods: ['GET', 'POST']
   }
 });
 
@@ -100,11 +78,35 @@ app.use((err, req, res, next) => {
 // Centralized error handler
 app.use(errorHandler);
 
+io.use((socket, next) => {
+  const token = socket.handshake.auth?.token;
+  const authentication = authService.authenticateToken(token, { updateActivity: false });
+  if (!authentication) return next(new Error('Unauthorized'));
+  socket.data.user = authentication.user;
+  socket.data.accessToken = token;
+  return next();
+});
+
 // WebSocket connection handler
 io.on('connection', (socket) => {
   logger.info(`Client connected: ${socket.id}`);
 
+  const authCheckInterval = setInterval(() => {
+    const authentication = authService.authenticateToken(socket.data.accessToken, { updateActivity: false });
+    if (!authentication) socket.disconnect(true);
+  }, 60000);
+
+  socket.on('auth-refresh', (token) => {
+    const authentication = authService.authenticateToken(token, { updateActivity: false });
+    if (!authentication || authentication.user.username !== socket.data.user.username) {
+      socket.disconnect(true);
+      return;
+    }
+    socket.data.accessToken = token;
+  });
+
   socket.on('disconnect', () => {
+    clearInterval(authCheckInterval);
     logger.info(`Client disconnected: ${socket.id}`);
   });
 });

@@ -35,6 +35,7 @@ CREATE TABLE IF NOT EXISTS rooms (
     y_output_sub INTEGER NOT NULL,
     description TEXT,
     is_active INTEGER DEFAULT 1,
+    show_in_ui INTEGER NOT NULL DEFAULT 1,
     FOREIGN KEY (floor) REFERENCES plcs(floor) ON DELETE CASCADE
 );
 
@@ -92,7 +93,19 @@ CREATE TABLE IF NOT EXISTS users (
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );
 
--- 8. Bảng API Keys tích hợp bên thứ ba (PMS / Skyhotel)
+-- 8. JWT access tokens for idle timeout and logout revocation
+CREATE TABLE IF NOT EXISTS auth_tokens (
+    token_id TEXT PRIMARY KEY,
+    username TEXT NOT NULL,
+    last_activity INTEGER NOT NULL,
+    revoked_at DATETIME,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (username) REFERENCES users(username) ON UPDATE CASCADE ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_auth_tokens_user ON auth_tokens(username);
+
+-- 9. Bảng API Keys tích hợp bên thứ ba (PMS / Skyhotel)
 CREATE TABLE IF NOT EXISTS api_keys (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     key TEXT UNIQUE NOT NULL,

@@ -1,25 +1,16 @@
-import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'fs';
-import { join, dirname } from 'path';
-import { fileURLToPath } from 'url';
 import logger from '../utils/logger.js';
 import historyLogger from './historyLogger.js';
 import notificationService from './notificationService.js';
 import config from '../utils/configLoader.js';
 import db from '../database/db.js';
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = dirname(__filename);
-
 /**
  * StateManager: Manages room states (input from PLC) and relay coil states (output to PLC)
  * - In-memory cache for ultra-fast O(1) reads
- * - Persisted to SQLite table `room_current_states` and disk fallback `data/state.json`
+ * - Persisted to SQLite table `room_current_states`
  */
 class StateManager {
   constructor() {
-    this.stateFilePath = join(__dirname, '../../data/state.json');
-    this.ensureDataDir();
-
     // Prepare SQLite statements
     this._initPreparedStatements();
 
@@ -58,6 +49,9 @@ class StateManager {
       `);
 
       this.loadAllStmt = db.prepare(`SELECT * FROM room_current_states`);
+      this.loadRoomStmt = db.prepare(`
+        SELECT * FROM room_current_states WHERE room_number = ?
+      `);
     } catch (err) {
       logger.error(`StateManager prepared statements error: ${err.message}`);
     }
@@ -86,19 +80,40 @@ class StateManager {
       }
       logger.info(`StateManager: Loaded ${rows.length} room states from SQLite`);
     } catch (error) {
-      logger.warn(`StateManager SQLite load failed, falling back to disk: ${error.message}`);
-      this.coilStates = this.loadCoilStates();
+      logger.error(`StateManager failed to load initial states from SQLite: ${error.message}`);
+      throw error;
     }
+  }
+
+  loadRoomState(room) {
+    const row = this.loadRoomStmt.get(room.toString());
+    if (!row) {
+      throw new Error(`Room state not found for room ${room}`);
+    }
+    this.roomStates[row.room_number] = {
+      room: row.room_number,
+      state: row.state,
+      stateName: row.state_name || 'Trống',
+      x_input: Boolean(row.x_input),
+      y_output_main: Boolean(row.y_output_main),
+      y_output_sub: Boolean(row.y_output_sub),
+      timestamp: row.last_updated || new Date().toISOString()
+    };
+    this.coilStates[row.room_number] = {
+      y_output_main: Boolean(row.main_relay_status),
+      y_output_sub: Boolean(row.sub_relay_status),
+      timestamp: row.last_updated || new Date().toISOString()
+    };
   }
 
   _initStateLookup() {
     const lookup = {};
     const definitions = {
       0: { name: 'Trống', x: false, y: false, ySub: false },
-      1: { name: 'Check-in', x: false, y: true, ySub: false },
-      2: { name: 'Vào phòng', x: true, y: true, ySub: false },
-      3: { name: 'Dùng thẻ', x: true, y: true, ySub: true },
-      4: { name: 'Sửa chữa', x: true, y: false, ySub: true }
+      1: { name: 'Chờ khách', x: false, y: true, ySub: false },
+      2: { name: 'Có khách', x: true, y: true, ySub: false },
+      3: { name: 'Bật cưỡng bức', x: true, y: true, ySub: true },
+      4: { name: 'Bảo trì', x: true, y: false, ySub: true }
     };
 
     for (const [id, s] of Object.entries(definitions)) {
@@ -106,36 +121,6 @@ class StateManager {
       lookup[key] = { state: parseInt(id), stateName: s.name };
     }
     return lookup;
-  }
-
-  ensureDataDir() {
-    const dataDir = dirname(this.stateFilePath);
-    if (!existsSync(dataDir)) {
-      mkdirSync(dataDir, { recursive: true });
-    }
-  }
-
-  loadCoilStates() {
-    try {
-      if (existsSync(this.stateFilePath)) {
-        const data = readFileSync(this.stateFilePath, 'utf8');
-        const parsed = JSON.parse(data);
-        return parsed.coils || {};
-      }
-    } catch (error) {
-      logger.error(`Failed to load coil states from JSON: ${error.message}`);
-    }
-    return {};
-  }
-
-  saveCoilStates() {
-    try {
-      const payload = { coils: this.coilStates };
-      writeFileSync(this.stateFilePath, JSON.stringify(payload, null, 2));
-      logger.debug('Coil states saved to disk fallback');
-    } catch (error) {
-      logger.error(`Failed to save coil states to JSON: ${error.message}`);
-    }
   }
 
   calculateRoomState(x, y, ySub) {
@@ -243,7 +228,6 @@ class StateManager {
       }
 
       this.coilStates[room].timestamp = new Date().toISOString();
-      this.saveCoilStates();
       return true;
     }
 

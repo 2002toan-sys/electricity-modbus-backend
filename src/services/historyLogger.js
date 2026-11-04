@@ -1,33 +1,9 @@
-import { appendFileSync, existsSync, mkdirSync } from 'fs';
-import { join, dirname } from 'path';
-import { fileURLToPath } from 'url';
 import logger from '../utils/logger.js';
 import db from '../database/db.js';
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = dirname(__filename);
-
 class HistoryLogger {
   constructor() {
-    this.historyFile = join(__dirname, '../../data/state-history.csv');
-    this.ensureDataDir();
-    this.initCSVHeader();
     this._initPreparedStatements();
-  }
-
-  ensureDataDir() {
-    const dataDir = dirname(this.historyFile);
-    if (!existsSync(dataDir)) {
-      mkdirSync(dataDir, { recursive: true });
-    }
-  }
-
-  initCSVHeader() {
-    if (!existsSync(this.historyFile)) {
-      const header = 'timestamp,room,floor,previous_state,new_state,message\n';
-      appendFileSync(this.historyFile, header);
-      logger.debug('State history CSV initialized');
-    }
   }
 
   _initPreparedStatements() {
@@ -42,7 +18,7 @@ class HistoryLogger {
   }
 
   /**
-   * Log state change to SQLite and CSV fallback
+   * Log state change to SQLite
    */
   logStateChange(room, floor, previousStateName, newStateName, message, triggerSource = 'modbus') {
     const timestamp = new Date().toISOString();
@@ -67,14 +43,6 @@ class HistoryLogger {
       logger.error(`Failed to log history to SQLite: ${error.message}`);
     }
 
-    // 2. Ghi tiếp vào file CSV fallback
-    try {
-      const escapedMessage = (message || '').replace(/"/g, '""');
-      const row = `${timestamp},"${roomStr}","${floorNum}","${prevState}","${newState}","${escapedMessage}"\n`;
-      appendFileSync(this.historyFile, row);
-    } catch (err) {
-      /* ignore csv error */
-    }
   }
 
   /**
@@ -94,6 +62,7 @@ class HistoryLogger {
       startDate,
       endDate,
       state,
+      search,
       page = 1,
       limit = 20
     } = options;
@@ -122,6 +91,21 @@ class HistoryLogger {
     if (state && state !== 'all') {
       whereClauses.push('new_state = ?');
       params.push(state);
+    }
+
+    if (typeof search === 'string' && search.trim()) {
+      const searchableFields = `
+          coalesce(room_number, '') || ' ' ||
+          coalesce(CAST(floor AS TEXT), '') || ' ' ||
+          coalesce(previous_state, '') || ' ' ||
+          coalesce(new_state, '') || ' ' ||
+          coalesce(message, '') || ' ' ||
+          coalesce(trigger_source, '')
+      `;
+      for (const term of search.trim().split(/\s+/)) {
+        whereClauses.push(`instr(lower(${searchableFields}), lower(?)) > 0`);
+        params.push(term);
+      }
     }
 
     const whereStr = whereClauses.length > 0 ? `WHERE ${whereClauses.join(' AND ')}` : '';

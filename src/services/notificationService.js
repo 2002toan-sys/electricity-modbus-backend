@@ -8,7 +8,7 @@ import { EventEmitter } from 'events';
 class NotificationService extends EventEmitter {
   constructor() {
     super();
-    this.stateTransitionMessages = config.notifications?.stateTransitions || {};
+    this.reloadStateTransitionMessages();
     this.initTelegram();
     this.initEmail();
     // Initialize Telegram queue (1 message per second)
@@ -23,9 +23,41 @@ class NotificationService extends EventEmitter {
     this.telegramChatId = tgConfig?.chatId;
   }
 
+  reloadTelegramConfig() {
+    this.initTelegram();
+  }
+
+  reloadStateTransitionMessages() {
+    this.stateTransitionMessages = config.notifications?.stateTransitions || {};
+  }
+
+  async testTelegram() {
+    if (!this.telegramBotToken || !this.telegramChatId) {
+      throw new Error('Telegram bot token and chat ID must be configured');
+    }
+
+    try {
+      const url = `https://api.telegram.org/bot${this.telegramBotToken}/sendMessage`;
+      const response = await axios.post(url, {
+        chat_id: this.telegramChatId,
+        text: 'Tin nhắn kiểm tra kết nối Telegram từ Hotel Modbus System.'
+      }, { timeout: 10000 });
+
+      if (!response.data?.ok) {
+        throw new Error(response.data?.description || 'Telegram API rejected the test message');
+      }
+      return true;
+    } catch (error) {
+      const message = error.response?.data?.description ||
+        (error.code === 'ECONNABORTED' ? 'Telegram request timed out' : 'Telegram request failed');
+      throw new Error(message);
+    }
+  }
+
   initEmail() {
     const emailConfig = config.notifications?.email;
     this.emailEnabled = emailConfig?.enabled || false;
+    this.transporter = null;
     if (this.emailEnabled) {
       this.transporter = nodemailer.createTransport({
         service: emailConfig?.service || 'gmail',
@@ -35,6 +67,10 @@ class NotificationService extends EventEmitter {
         }
       });
     }
+  }
+
+  reloadEmailConfig() {
+    this.initEmail();
   }
 
   /**

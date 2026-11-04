@@ -5,6 +5,9 @@ data
 .dockerignore
 Dockerfile
 npm-debug.log
+.env
+.env.*
+!.env.example
 Step-*
 *.md
 brain/

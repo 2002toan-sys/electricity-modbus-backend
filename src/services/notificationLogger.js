@@ -1,17 +1,8 @@
-import { writeFileSync, appendFileSync, existsSync, mkdirSync } from 'fs';
-import { join, dirname } from 'path';
-import { fileURLToPath } from 'url';
 import logger from '../utils/logger.js';
 import db from '../database/db.js';
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = dirname(__filename);
-
 class NotificationLogger {
   constructor() {
-    this.notificationsFile = join(__dirname, '../../data/notifications.csv');
-    this.ensureDataDir();
-    this.initCSVHeader();
     this._initPreparedStatements();
   }
 
@@ -43,23 +34,8 @@ class NotificationLogger {
     }
   }
 
-  ensureDataDir() {
-    const dataDir = dirname(this.notificationsFile);
-    if (!existsSync(dataDir)) {
-      mkdirSync(dataDir, { recursive: true });
-    }
-  }
-
-  initCSVHeader() {
-    if (!existsSync(this.notificationsFile)) {
-      const header = 'id,room,message,stateName,timestamp,read\n';
-      writeFileSync(this.notificationsFile, header);
-      logger.debug('Notifications CSV initialized');
-    }
-  }
-
   /**
-   * Save notification to SQLite (and CSV fallback)
+   * Save notification to SQLite
    */
   saveNotification(notification) {
     try {
@@ -78,14 +54,6 @@ class NotificationLogger {
         timestamp: time,
         is_read: isRead
       });
-
-      // 2. Lưu vào file CSV (fallback)
-      try {
-        const escapedMessage = (message || '').replace(/"/g, '""');
-        const escapedStatus = (stateName || '').replace(/"/g, '""');
-        const row = `${notifId},"${roomStr}","${escapedMessage}","${escapedStatus}","${time}",${isRead}\n`;
-        appendFileSync(this.notificationsFile, row);
-      } catch { /* ignore csv error */ }
 
       logger.debug(`Notification saved to SQLite: Room ${room}`);
       return { id: notifId, room: roomStr, message, stateName, timestamp: time, read: Boolean(isRead) };
@@ -130,17 +98,13 @@ class NotificationLogger {
   }
 
   /**
-   * Clear all notifications in SQLite and CSV
+   * Clear all notifications in SQLite
    */
   clearAllNotifications() {
     try {
       this.deleteAllStmt.run();
-      
-      // Reset CSV file
-      const header = 'id,room,message,stateName,timestamp,read\n';
-      writeFileSync(this.notificationsFile, header);
 
-      logger.info('All notifications cleared from SQLite & CSV');
+      logger.info('All notifications cleared from SQLite');
       return true;
     } catch (error) {
       logger.error(`Failed to clear notifications: ${error.message}`);

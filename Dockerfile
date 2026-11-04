@@ -1,9 +1,12 @@
 # ─────────────────────────────────────────────
 # Stage 1: Install dependencies
 # ─────────────────────────────────────────────
-FROM node:20-alpine AS deps
+FROM node:22-alpine AS deps
 
 WORKDIR /app
+
+# better-sqlite3 needs a native build toolchain on Alpine.
+RUN apk add --no-cache python3 make g++
 
 # Copy only package files first (better layer caching)
 COPY package*.json ./
@@ -14,7 +17,7 @@ RUN npm ci --omit=dev && npm cache clean --force
 # ─────────────────────────────────────────────
 # Stage 2: Production image
 # ─────────────────────────────────────────────
-FROM node:20-alpine AS production
+FROM node:22-alpine AS production
 
 WORKDIR /app
 

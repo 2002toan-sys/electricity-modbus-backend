@@ -6,10 +6,10 @@ This system manages hotel room access control via Modbus TCP relay control with 
 
 ## Features
 
--- ✅ **Dual Authentication**: API Key (third-party) + Session (frontend)
+- ✅ **Dual Authentication**: JWT bearer token (frontend) + API key (third-party)
 - ✅ **Role-based Access Control**: Admin (full control) + User (limited sub relay)
 - ✅ **State Transitions**: Automatic state calculation (5 Vietnamese states)
-- ✅ **State History**: CSV logging with queryable API
+- ✅ **State History**: SQLite logging with queryable API
 - ✅ **Real-time Notifications**: WebSocket + Telegram + Email
 - ✅ **Concurrent Write Safety**: Floor-based queue system
 - ✅ **Per-floor Parallel Polling**: No blocking between floors
@@ -21,7 +21,7 @@ This system manages hotel room access control via Modbus TCP relay control with 
 ### Authentication
 
 #### POST /api/auth/login
-Frontend login to create a server-side session (cookie).
+Login with a username and password to receive a JWT access token.
 
 **Request:**
 ```bash
@@ -34,6 +34,7 @@ curl -X POST http://localhost:3000/api/auth/login \
 ```json
 {
   "success": true,
+  "accessToken": "<JWT>",
   "user": {
     "username": "admin",
     "role": "admin"
@@ -41,19 +42,19 @@ curl -X POST http://localhost:3000/api/auth/login \
 }
 ```
 
-**Available users** (from appsettings.json):
-- **admin** / admin123 (full control)
+**Default users** (created in SQLite on first setup; change the passwords after login):
+- **admin12345** / admin123 (full control)
 - **user** / user123 (limited sub relay only)
 
 ---
 
 #### GET /api/auth/verify
-Verify session (checks server-side session cookie).
+Verify the JWT and return the current user.
 
-**Request (with session cookie):**
+**Request (with bearer token):**
 ```bash
-# Use cookie saved from login (cookie jar)
-curl -b cookies.txt -X GET http://localhost:3000/api/auth/verify
+curl -X GET http://localhost:3000/api/auth/verify \
+  -H "Authorization: Bearer <JWT>"
 ```
 
 **Response:**
@@ -112,36 +113,43 @@ curl -X POST http://localhost:3000/api/relay/sub/set \
 
 ---
 
-#### Frontend Session (browser or app)
+#### Frontend JWT (browser or app)
 
-Frontend logs in and receives a server-side session cookie. Use that cookie for subsequent API calls. Example with `curl` cookie jar:
+Send the access token in the `Authorization` header for subsequent API calls:
 
 ```bash
-# Login and save cookie
-curl -c cookies.txt -X POST http://localhost:3000/api/auth/login \
+# Login and copy accessToken from the response
+curl -X POST http://localhost:3000/api/auth/login \
   -H "Content-Type: application/json" \
   -d '{"username": "admin", "password": "admin123"}'
 
-# Use saved cookie to call main relay (Admin)
-curl -b cookies.txt -X POST http://localhost:3000/api/relay/main/set \
+# Use the returned token to call main relay (Admin)
+curl -X POST http://localhost:3000/api/relay/main/set \
+  -H "Authorization: Bearer <JWT>" \
   -H "Content-Type: application/json" \
   -d '[{"room": "201", "set": "on"}]'
 
-# Use saved cookie to call sub relay (User allowed only if main is ON)
-curl -b cookies.txt -X POST http://localhost:3000/api/relay/sub/set \
+# Use the token to call sub relay
+curl -X POST http://localhost:3000/api/relay/sub/set \
+  -H "Authorization: Bearer <JWT>" \
   -H "Content-Type: application/json" \
   -d '[{"room": "201", "set": "on"}]'
 ```
+
+Access tokens are renewed by `/api/auth/activity` and expire after 24 hours without activity.
+Call `/api/auth/logout` with the bearer token to revoke it immediately. `API_KEY` is optional and
+should be enabled only when a trusted third-party system needs machine-to-machine access. API keys
+do not authenticate user-management or configuration endpoints.
 
 ### Monitoring
 
 #### GET /api/monitor/rooms
 Get current room states with state calculations.
 
-**Request (browser/frontend - with session cookie):**
+**Request (browser/frontend - with bearer token):**
 ```bash
-# Use cookie saved from login (cookie jar)
-curl -b cookies.txt -X GET "http://localhost:3000/api/monitor/rooms"
+curl -X GET "http://localhost:3000/api/monitor/rooms" \
+  -H "Authorization: Bearer <JWT>"
 ```
 
 **Request (third-party - with API Key):**
@@ -158,7 +166,7 @@ curl -X GET "http://localhost:3000/api/monitor/rooms" \
     "201": {
       "room": "201",
       "state": 2,
-      "stateName": "Vào phòng",
+      "stateName": "Có khách",
       "x_input": true,
       "y_output_main": true,
       "y_output_sub": false,
@@ -178,22 +186,23 @@ curl -X GET "http://localhost:3000/api/monitor/rooms" \
 ```
 
 **State Codes:**
-| State | Name | Color | x_input | y_main | y_sub |
+| State | Name | Description | x_input | y_main | y_sub |
 |-------|------|-------|---------|--------|-------|
-| 0 | Trống | 🟢 Green | 0 | 0 | 0 |
-| 1 | Check-in | 🔵 Blue | 0 | 1 | 0 |
-| 2 | Vào phòng | 🔴 Red | 1 | 1 | 0 |
-| 3 | Dùng thẻ | 🟡 Yellow | 1 | 1 | 1 |
-| 4 | Sửa chữa | ⚫ Black | 1 | 0 | 1 |
+| 0 | Trống | Chưa có khách; relay chính và phụ tắt | 0 | 0 | 0 |
+| 1 | Chờ khách | Relay chính bật; chưa phát hiện khách | 0 | 1 | 0 |
+| 2 | Có khách | Đã phát hiện khách; relay chính bật | 1 | 1 | 0 |
+| 3 | Bật cưỡng bức | Khách trong phòng; relay phụ được bật cưỡng bức | 1 | 1 | 1 |
+| 4 | Bảo trì | Tín hiệu phòng ở trạng thái bảo trì | 1 | 0 | 1 |
 
 ---
 
 #### GET /api/monitor/plc-status
 Get PLC connection status.
 
-**Request (browser/frontend - with session cookie):**
+**Request (browser/frontend - with bearer token):**
 ```bash
-curl -b cookies.txt -X GET "http://localhost:3000/api/monitor/plc-status"
+curl -X GET "http://localhost:3000/api/monitor/plc-status" \
+  -H "Authorization: Bearer <JWT>"
 ```
 
 **Request (third-party - with API Key):**
@@ -223,19 +232,28 @@ curl -X GET "http://localhost:3000/api/monitor/plc-status" \
 ---
 
 #### GET /api/monitor/history
-Get state change history (CSV logged).
+Get state change history from SQLite.
 
 **Query Parameters:**
 - `room` (optional): Filter by room number (e.g., "201")
 - `limit` (optional): Number of records (default: 100)
 - `startDate` (optional): ISO date string (e.g., "2025-12-01T00:00:00Z")
 - `endDate` (optional): ISO date string
+- `search` (optional): Search room, floor, state names, message, or event source (max 100 characters)
 
 **Examples:**
 
-Get last 50 changes for room 201 (session cookie):
+Get last 50 changes for room 201 (JWT):
 ```bash
-curl -b cookies.txt -X GET "http://localhost:3000/api/monitor/history?room=201&limit=50"
+curl -X GET "http://localhost:3000/api/monitor/history?room=201&limit=50" \
+  -H "Authorization: Bearer <JWT>"
+```
+
+Search history by room, state, or message:
+```bash
+curl -G "http://localhost:3000/api/monitor/history" \
+  --data-urlencode "search=201 bật tay" \
+  -H "Authorization: Bearer <JWT>"
 ```
 
 Get all changes in a date range (API Key):
@@ -254,15 +272,15 @@ curl -X GET "http://localhost:3000/api/monitor/history?startDate=2025-12-01T00:0
       "room": "201",
       "floor": "2",
       "previous_state": "Trống",
-      "new_state": "Vào phòng",
+      "new_state": "Có khách",
       "message": "✅ Đã cấp điện và cắm thẻ phòng 201"
     },
     {
       "timestamp": "2025-12-02T10:30:00.000Z",
       "room": "201",
       "floor": "2",
-      "previous_state": "Check-in",
-      "new_state": "Vào phòng",
+      "previous_state": "Chờ khách",
+      "new_state": "Có khách",
       "message": "✅ Đã cắm thẻ phòng 201"
     }
   ],
@@ -276,7 +294,9 @@ curl -X GET "http://localhost:3000/api/monitor/history?startDate=2025-12-01T00:0
 
 ### Connection
 ```javascript
-const socket = io('http://localhost:3000');
+const socket = io('http://localhost:3000', {
+  auth: { token: accessToken }
+});
 
 socket.on('connect', () => {
   console.log('Connected to server');
@@ -303,7 +323,7 @@ socket.on('state-changed', (notification) => {
     {
       room: "201",
       previousState: "Trống",
-      newState: "Vào phòng",
+      newState: "Có khách",
       message: "✅ Đã cấp điện và cắm thẻ phòng 201",
       timestamp: "2025-12-02T10:35:00.000Z"
     }
@@ -319,15 +339,15 @@ Automatic notification messages when state changes:
 
 | Transition | Message |
 |-----------|---------|
-| Trống → Vào phòng | ✅ Đã cấp điện và cắm thẻ phòng {room} |
-| Trống → Check-in | ✅ Đã cấp điện phòng {room} |
-| Check-in → Vào phòng | ✅ Đã cắm thẻ phòng {room} |
-| Vào phòng → Dùng thẻ | ⚠️ Đã bật điện cưỡng bức phòng {room} |
-| Vào phòng → Check-in | ⚠️ Đã rút thẻ phòng {room} |
-| Dùng thẻ → Trống | ❌ Đã cắt điện phòng {room} |
-| Vào phòng → Trống | ❌ Đã cắt điện phòng {room} |
-| Check-in → Trống | ❌ Đã cắt điện phòng {room} |
-| Trống → Sửa chữa | 🔧 Đang sửa chữa phòng {room} |
+| Trống → Có khách | Mở điện và phát hiện khách cùng lúc |
+| Trống → Chờ khách | Mở điện trước khi phát hiện khách |
+| Chờ khách → Có khách | Phát hiện khách vào phòng |
+| Có khách → Bật cưỡng bức | Bật relay phụ cưỡng bức |
+| Có khách → Chờ khách | Khách ra ngoài; điện chính vẫn bật |
+| Bật cưỡng bức → Trống | Đóng điện sau trạng thái bật cưỡng bức |
+| Có khách → Trống | Đóng điện và khách ra khỏi phòng |
+| Chờ khách → Trống | Đóng điện khi chưa phát hiện khách |
+| Trống → Bảo trì | Chuyển phòng sang chế độ bảo trì |
 
 ---
 
@@ -335,42 +355,18 @@ Automatic notification messages when state changes:
 
 ### Telegram (Optional)
 
-**Enable in appsettings.json:**
-```json
-{
-  "notifications": {
-    "telegram": {
-      "enabled": true,
-      "botToken": "123456:ABC-DEF1234ghIkl-zyx57W2v1u123ew11",
-      "chatId": "-1001234567890"
-    }
-  }
-}
-```
+**Configure Telegram in the application's Settings page:** enable Telegram and enter the bot token and chat ID.
 
 **How to get Bot Token & Chat ID:**
 1. Create bot via [@BotFather](https://t.me/botfather)
 2. Get your chat ID: https://api.telegram.org/bot{BOT_TOKEN}/getUpdates
-3. Save tokens to appsettings.json
+3. Enter the token and chat ID in Settings.
 
 ---
 
 ### Email (Optional)
 
-**Enable in appsettings.json:**
-```json
-{
-  "notifications": {
-    "email": {
-      "enabled": true,
-      "service": "gmail",
-      "user": "your-email@gmail.com",
-      "password": "your-app-password",
-      "to": "admin@hotel.com"
-    }
-  }
-}
-```
+**Configure email in the application's Settings page:** enable email and enter the SMTP service, sender credentials, and recipient.
 
 **Gmail Setup:**
 1. Enable 2-Factor Authentication
@@ -381,30 +377,26 @@ Automatic notification messages when state changes:
 
 ## 5. Frontend Integration Example (Vue.js / React)
 
-**Authentication:** Uses server-side session. Login once to get session cookie, then browser automatically sends it with all requests.
+**Authentication:** Login to receive an access token and send it as a bearer token with every protected request.
 
 ```javascript
-// Login (session-based - browser saves cookie automatically)
+let accessToken;
+
 async function login(username, password) {
   const response = await fetch('http://localhost:3000/api/auth/login', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    credentials: 'include',  // Important: send and save cookies
     body: JSON.stringify({ username, password })
   });
   const data = await response.json();
-  if (data.user) {
-    // Store only non-sensitive info for client-side UI
-    localStorage.setItem('role', data.user.role);
-    localStorage.setItem('username', data.user.username);
-  }
+  accessToken = data.accessToken;
   return data;
 }
 
-// Verify session (check if still logged in)
-async function verifySession() {
+// Verify the access token
+async function verifyToken() {
   const response = await fetch('http://localhost:3000/api/auth/verify', {
-    credentials: 'include'  // Send session cookie
+    headers: { Authorization: `Bearer ${accessToken}` }
   });
   return await response.json();
 }
@@ -413,17 +405,16 @@ async function verifySession() {
 async function logout() {
   const response = await fetch('http://localhost:3000/api/auth/logout', {
     method: 'POST',
-    credentials: 'include'
+    headers: { Authorization: `Bearer ${accessToken}` }
   });
-  localStorage.removeItem('role');
-  localStorage.removeItem('username');
+  accessToken = null;
   return await response.json();
 }
 
-// Fetch room states (browser sends session cookie automatically)
+// Fetch room states
 async function getRoomStates() {
   const response = await fetch('http://localhost:3000/api/monitor/rooms', {
-    credentials: 'include'  // Send session cookie
+    headers: { Authorization: `Bearer ${accessToken}` }
   });
   return await response.json();
 }
@@ -440,15 +431,19 @@ async function controlRelay(room, relayType, value) {
   
   const response = await fetch(`http://localhost:3000/api/relay/${relayType}/set`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    credentials: 'include',  // Send session cookie
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${accessToken}`
+    },
     body: JSON.stringify([{ room, set: value }])
   });
   return await response.json();
 }
 
 // Listen to real-time WebSocket updates
-const socket = io('http://localhost:3000');
+const socket = io('http://localhost:3000', {
+  auth: { token: accessToken }
+});
 
 socket.on('room-states', (states) => {
   updateUI(states);
@@ -463,7 +458,7 @@ socket.on('state-changed', (notification) => {
 
 ## 6. Third-party API Integration (API Key)
 
-For external systems (door locks, booking system, etc.), use an API Key mapped in `appsettings.json`:
+For external systems (such as PMS integrations), set an optional `API_KEY` in the backend `.env` file:
 
 ```bash
 #!/bin/bash
@@ -496,9 +491,9 @@ curl -X POST "${BASE_URL}/api/relay/sub/set" \
 
 ## 7. State History Queries
 
-### Get history for specific room (session)
+### Get history for specific room (JWT)
 ```bash
-curl -b cookies.txt "http://localhost:3000/api/monitor/history?room=201&limit=20"
+curl -H "Authorization: Bearer <JWT>" "http://localhost:3000/api/monitor/history?room=201&limit=20"
 ```
 
 ### Get history for specific room (API Key)
@@ -509,12 +504,12 @@ curl "http://localhost:3000/api/monitor/history?room=201&limit=20" \
 
 ### Get history with date filter
 ```bash
-curl -b cookies.txt "http://localhost:3000/api/monitor/history?startDate=2025-12-01T00:00:00Z&endDate=2025-12-02T23:59:59Z"
+curl -H "Authorization: Bearer <JWT>" "http://localhost:3000/api/monitor/history?startDate=2025-12-01T00:00:00Z&endDate=2025-12-02T23:59:59Z"
 ```
 
 ### Export to CSV (via script)
 ```bash
-curl -b cookies.txt "http://localhost:3000/api/monitor/history?limit=1000" \
+curl -H "Authorization: Bearer <JWT>" "http://localhost:3000/api/monitor/history?limit=1000" \
   | jq -r '.data[] | [.timestamp, .room, .previous_state, .new_state, .message] | @csv' > history.csv
 ```
 
@@ -522,13 +517,13 @@ curl -b cookies.txt "http://localhost:3000/api/monitor/history?limit=1000" \
 
 ## 8. Error Handling
 
-### Session Expired or Invalid
+### JWT Expired, Revoked, or Invalid
 ```json
 {
   "error": "Unauthorized"
 }
 ```
-**Solution:** Call `POST /api/auth/login` again to create a new session
+**Solution:** Call `POST /api/auth/login` again to obtain a new access token.
 
 ### Insufficient Permissions
 ```json
@@ -544,80 +539,32 @@ curl -b cookies.txt "http://localhost:3000/api/monitor/history?limit=1000" \
   "error": "PLC connection lost"
 }
 ```
-**Solution:** Check PLC IP/port in appsettings.json and network connectivity
+**Solution:** Check the PLC IP/port in the application's Settings page and verify network connectivity
 
 ---
 
 ## 9. Configuration
 
-### appsettings.json - Auth Section
+### Environment - Auth secrets
 
-```json
-{
-  "auth": {
-    "session": {
-      "secret": "your-session-secret-change-in-production",
-      "maxAge": 86400000
-    },
-    "users": [
-      {
-        "username": "admin",
-        "password": "admin123",
-        "role": "admin"
-      },
-      {
-        "username": "user",
-        "password": "user123",
-        "role": "user"
-      }
-    ],
-    "apiKeys": [
-      {
-        "key": "your-secret-api-key-here",
-        "role": "admin",
-        "name": "internal-system"
-      }
-    ]
-  },
-  "notifications": {
-    "telegram": {
-      "enabled": false,
-      "botToken": "...",
-      "chatId": "..."
-    },
-    "email": {
-      "enabled": false,
-      "service": "gmail",
-      "user": "...",
-      "password": "...",
-      "to": "..."
-    },
-    "stateTransitions": {
-      "Trống-Vào phòng": "✅ Đã cấp điện và cắm thẻ phòng {room}"
-    }
-  }
-}
+```dotenv
+JWT_SECRET=generate-a-random-secret-at-least-32-characters
+API_KEY=optional-random-secret-for-third-party-integration
 ```
 
 ---
 
 ## 10. Security Best Practices
 
-1. **Change Session Secret in Production**
-   ```json
-   "auth": { "session": { "secret": "generate-random-string-min-32-chars" } }
-   ```
+1. **JWT Secret:** Keep `JWT_SECRET` private, random, and at least 32 characters. Rotating it invalidates all access tokens.
 
 2. **Secure API Key Storage**
-   - Move `apiKeys` to `.env` file (not in config) for production
-   - Rotate API keys regularly
-   - Use different keys per third-party client
-   - Log API key usage for auditing
+   - Set `API_KEY` in `.env` only when third-party access is required.
+   - The current configuration uses one shared integration key; rotate it if exposed.
 
-3. **Session Security**
-   - In production: Set `cookie.secure: true` (HTTPS only)
-   - Set `cookie.httpOnly: true` (prevent JavaScript access)
-   - Consider using Redis session store for scalability
+3. **JWT Security**
+   - Use HTTPS in production; browser access tokens are stored in session storage.
+   - Access tokens expire after 24 hours without activity; logout revokes the token in SQLite.
 
 4. **HTTPS in Production**
    - Use TLS/SSL certificates
@@ -629,7 +576,7 @@ curl -b cookies.txt "http://localhost:3000/api/monitor/history?limit=1000" \
    - Consider external auth (OAuth2, LDAP, SSO)
    - Audit login attempts and set lockout policies
 
-6. **Database Security** (if added)
+6. **Database Security**
    - Hash passwords with bcrypt
    - Use parameterized queries
    - Encrypt sensitive relay state data
@@ -640,6 +587,4 @@ curl -b cookies.txt "http://localhost:3000/api/monitor/history?limit=1000" \
 
 For issues or questions, check:
 - `logs/` - Application logs
-- `data/state-history.csv` - State change history
-- `data/state.json` - Current coil states
-
+- `data/hotel.db` - Users, room states, configuration, and history
