@@ -102,3 +102,61 @@ test('CommandQueue marks the floor paused when a write loses PLC connection', as
   assert.equal(queue.isPaused.get('floor_2'), true);
   queue.destroy();
 });
+
+test('CommandQueue continues processing after a non-connection command error', async () => {
+  const { queue, dependencies, calls } = createQueue();
+  const results = [];
+  let writeCount = 0;
+  dependencies.plcManager.writeCoil = async (...args) => {
+    calls.writes.push(['coil', ...args]);
+    writeCount += 1;
+    if (writeCount === 1) throw new Error('Modbus exception');
+    return true;
+  };
+  queue.queues.set('floor_2', [
+    {
+      type: 'WRITE',
+      floor: 2,
+      commandType: 'writeCoil',
+      address: 14,
+      value: false,
+      callback: (error) => results.push(error?.message ?? 'first succeeded')
+    },
+    {
+      type: 'WRITE',
+      floor: 2,
+      commandType: 'writeCoil',
+      address: 15,
+      value: true,
+      callback: (error) => results.push(error?.message ?? 'second succeeded')
+    }
+  ]);
+
+  await queue.processQueue(2);
+
+  assert.deepEqual(results, ['Modbus exception', 'second succeeded']);
+  assert.deepEqual(calls.writes, [
+    ['coil', 2, 14, false],
+    ['coil', 2, 15, true]
+  ]);
+  assert.equal(queue.isPaused.get('floor_2'), false);
+  queue.destroy();
+});
+
+test('CommandQueue connection timeout fails queued writes and clears pending commands', () => {
+  const { queue } = createQueue();
+  const callbackErrors = [];
+  const pendingCommands = [
+    { type: 'READ', floor: 2 },
+    { type: 'WRITE', callback: (error) => callbackErrors.push(error.message) }
+  ];
+
+  queue._handleConnectionTimeout(2, 'floor_2', pendingCommands);
+
+  assert.equal(queue.isPaused.get('floor_2'), true);
+  assert.deepEqual(pendingCommands, []);
+  assert.deepEqual(callbackErrors, [
+    'Floor 2 PLC is disconnected (timeout after 60s)'
+  ]);
+  queue.destroy();
+});

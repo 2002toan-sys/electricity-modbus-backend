@@ -116,16 +116,7 @@ export default class CommandQueue {
         // Chờ kết nối tối đa 60s
         const connected = await this._waitForConnection(floor, 60000);
         if (!connected) {
-          this.logger.warn(`Floor ${floor}: Connection timeout (60s), pausing queue`);
-          if (this.queues.has(key)) this.isPaused.set(key, true);
-
-          // Trả lỗi ngay lập tức cho các lệnh WRITE đang chờ trong queue để client không bị treo
-          while (queue.length > 0) {
-            const cmd = queue.shift();
-            if (cmd.type === 'WRITE' && cmd.callback) {
-              cmd.callback(new Error(`Floor ${floor} PLC is disconnected (timeout after 60s)`));
-            }
-          }
+          this._handleConnectionTimeout(floor, key, queue);
           break;
         }
 
@@ -136,24 +127,40 @@ export default class CommandQueue {
             command.callback(null, result);
           }
         } catch (error) {
-          this.logger.error(`Floor ${floor}: ${command.type} error: ${error.message}`);
-
-          // Đảm bảo callback của lệnh WRITE luôn được gọi khi có lỗi
-          if (command.type === 'WRITE' && command.callback) {
-            command.callback(error);
-          }
-
-          if (this._isConnectionError(error)) {
-            const entry = this.plcManager.clients?.get(key);
-            if (entry) entry.connected = false;
-            this.isPaused.set(key, true);
-            break;
-          }
+          if (this._handleCommandFailure(command, error, floor, key)) break;
         }
       }
     } finally {
       if (this.queues.has(key)) this.isProcessing.set(key, false);
     }
+  }
+
+  _handleConnectionTimeout(floor, key, queue) {
+    this.logger.warn(`Floor ${floor}: Connection timeout (60s), pausing queue`);
+    if (this.queues.has(key)) this.isPaused.set(key, true);
+
+    const error = new Error(`Floor ${floor} PLC is disconnected (timeout after 60s)`);
+    while (queue.length > 0) {
+      const command = queue.shift();
+      if (command.type === 'WRITE' && command.callback) {
+        command.callback(error);
+      }
+    }
+  }
+
+  _handleCommandFailure(command, error, floor, key) {
+    this.logger.error(`Floor ${floor}: ${command.type} error: ${error.message}`);
+
+    if (command.type === 'WRITE' && command.callback) {
+      command.callback(error);
+    }
+
+    if (!this._isConnectionError(error)) return false;
+
+    const entry = this.plcManager.clients?.get(key);
+    if (entry) entry.connected = false;
+    this.isPaused.set(key, true);
+    return true;
   }
 
   async _waitForConnection(floor, maxWait = 60000) {
@@ -184,31 +191,27 @@ export default class CommandQueue {
   }
 
   async _executeRead({ floor, registerType, startAddress, count }) {
-    try {
-      let result;
-      if (registerType === 'holding') {
-        result = await this.plcManager.readRegisters(floor, startAddress, count);
-      } else {
-        result = await this.plcManager.readCoils(floor, startAddress, count);
-      }
-
-      // Update room state from D100/D101 holding registers (O(1) floor lookup)
-      if (registerType === 'holding' && startAddress === 100 && result) {
-        const [d100, d101] = result;
-        const roomsOnFloor = this.config.getRoomsByFloor(floor);
-
-        for (const { room, mapping } of roomsOnFloor) {
-          this.stateManager.updateRoomState(room, d100, d101, mapping);
-          this.stateManager.updateCoilState(room, 'main', !!((d101 >> mapping.y_output_main) & 1));
-          this.stateManager.updateCoilState(room, 'sub', !!((d101 >> mapping.y_output_sub) & 1));
-        }
-        this.logger.debug(`READ floor ${floor}: D100=${d100}, D101=${d101}`);
-      }
-
-      return result;
-    } catch (error) {
-      throw error;
+    let result;
+    if (registerType === 'holding') {
+      result = await this.plcManager.readRegisters(floor, startAddress, count);
+    } else {
+      result = await this.plcManager.readCoils(floor, startAddress, count);
     }
+
+    // Update room state from D100/D101 holding registers (O(1) floor lookup)
+    if (registerType === 'holding' && startAddress === 100 && result) {
+      const [d100, d101] = result;
+      const roomsOnFloor = this.config.getRoomsByFloor(floor);
+
+      for (const { room, mapping } of roomsOnFloor) {
+        this.stateManager.updateRoomState(room, d100, d101, mapping);
+        this.stateManager.updateCoilState(room, 'main', !!((d101 >> mapping.y_output_main) & 1));
+        this.stateManager.updateCoilState(room, 'sub', !!((d101 >> mapping.y_output_sub) & 1));
+      }
+      this.logger.debug(`READ floor ${floor}: D100=${d100}, D101=${d101}`);
+    }
+
+    return result;
   }
 
   async _executeWrite({ floor, commandType, address, value }) {
