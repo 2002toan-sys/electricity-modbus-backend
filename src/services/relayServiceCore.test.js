@@ -108,3 +108,21 @@ test('turning off main queues sub off when the interlock is enabled', async () =
   assert.deepEqual(calls.writes[1].slice(0, 3), [2, 11, false]);
   assert.equal(calls.writes[1].length, 3);
 });
+
+test('turning off main does not queue sub when the interlock is disabled', async () => {
+  const { service, calls, dependencies } = createRelayService();
+  dependencies.config.app.interlock_enabled = false;
+
+  await service.setRelay('201', 'main', 'off');
+
+  assert.equal(calls.writes.length, 1);
+});
+
+test('setRelay broadcasts only when the persisted relay state changes', async () => {
+  const { service, calls, dependencies } = createRelayService();
+  dependencies.stateManager.updateCoilState = () => false;
+
+  await service.setRelay('201', 'sub', 'on');
+
+  assert.equal(calls.stateUpdates, 0);
+});
