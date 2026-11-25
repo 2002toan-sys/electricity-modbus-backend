@@ -1,4 +1,4 @@
-import relayService from '../services/relayService.js';
+import relayService, { RelayAuthorizationError } from '../services/relayService.js';
 import { validateRelayRequest, validateRoomsList } from '../utils/validator.js';
 import logger from '../utils/logger.js';
 import config from '../utils/configLoader.js';
@@ -15,7 +15,7 @@ const setRelayForRooms = async (req, res, relayType) => {
       return res.status(400).json({ error: validation.error });
     }
 
-    const userRole = req.user?.role || 'admin';
+    const userRole = req.user?.role;
     const results = [];
 
     for (const item of req.body) {
@@ -23,14 +23,19 @@ const setRelayForRooms = async (req, res, relayType) => {
         const result = await relayService.setRelay(item.room, relayType, item.set, userRole);
         results.push(result);
       } catch (error) {
-        logger.error(`Failed to set ${relayType} relay for room ${item.room}: ${error.message}`);
+        if (error instanceof RelayAuthorizationError) {
+          logger.warn(`Relay control denied for user ${req.user?.id ?? req.user?.username}`);
+        } else {
+          logger.error(`Failed to set ${relayType} relay for room ${item.room}: ${error.message}`);
+        }
         throw error;
       }
     }
 
     return res.status(200).json(results);
   } catch (error) {
-    return res.status(500).json({ error: error.message });
+    const statusCode = error instanceof RelayAuthorizationError ? 403 : 500;
+    return res.status(statusCode).json({ error: error.message });
   }
 };
 

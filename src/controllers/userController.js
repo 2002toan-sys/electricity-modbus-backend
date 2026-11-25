@@ -1,5 +1,6 @@
 import userService, { UserServiceError } from '../services/userService.js';
 import logger from '../utils/logger.js';
+import { logAuthAudit } from '../utils/authAudit.js';
 
 const handleError = (res, error, action) => {
   if (error instanceof UserServiceError) {
@@ -21,12 +22,13 @@ export function getUsers(req, res) {
   }
 }
 
-export function createUser(req, res) {
+export async function createUser(req, res) {
   try {
     const body = req.body || {};
-    const user = userService.createUser({
+    const user = await userService.createUser({
       username: body.username,
       role: body.role,
+      status: body.status,
       fullName: body.full_name,
       password: body.password
     });
@@ -36,14 +38,22 @@ export function createUser(req, res) {
   }
 }
 
-export function updateUser(req, res) {
+export async function updateUser(req, res) {
   const id = Number(req.params.id);
   if (!Number.isSafeInteger(id) || id < 1) {
     return res.status(400).json({ error: 'Invalid user ID' });
   }
 
   try {
-    const user = userService.updateUserAsAdmin(id, req.body || {}, req.user.username);
+    const previousUser = userService.getUserIdentityById(id);
+    const user = await userService.updateUserAsAdmin(id, req.body || {}, req.user.username);
+    if (previousUser?.role !== user.role) {
+      logAuthAudit('auth.role.changed', {
+        req,
+        userId: id,
+        actorId: req.user.id
+      });
+    }
     return res.status(200).json(user);
   } catch (error) {
     return handleError(res, error, 'update user');

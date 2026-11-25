@@ -1,6 +1,10 @@
 import assert from 'node:assert/strict';
-import test from 'node:test';
-import RelayService from './relayServiceCore.js';
+import test, { after } from 'node:test';
+import { setupServiceTestDatabase } from '../test/serviceTestSetup.js';
+
+const cleanup = await setupServiceTestDatabase();
+const { RelayService } = await import('./relayService.js');
+after(cleanup);
 
 const createRelayService = (overrides = {}) => {
   const calls = {
@@ -50,7 +54,7 @@ const createRelayService = (overrides = {}) => {
 test('setRelay writes the requested relay and returns the established result shape', async () => {
   const { service, calls } = createRelayService();
 
-  const result = await service.setRelay('201', 'main', 'on');
+  const result = await service.setRelay('201', 'main', 'on', 'admin');
 
   assert.deepEqual(calls.writes[0].slice(0, 3), [2, 10, true]);
   assert.deepEqual(calls.coilUpdates, [['201', 'main', true]]);
@@ -66,9 +70,16 @@ test('setRelay preserves user relay permission checks', async () => {
   const { service } = createRelayService();
 
   await assert.rejects(
+    service.setRelay('201', 'main', 'on'),
+    /Authenticated role cannot control relays/
+  );
+  await assert.rejects(
     service.setRelay('201', 'main', 'off', 'user'),
     /User role cannot control main relay/
   );
+
+  const { service: allowedSubService } = createRelayService();
+  await allowedSubService.setRelay('201', 'sub', 'on', 'user');
 
   const { service: subService, dependencies } = createRelayService();
   dependencies.stateManager.getRoomState = () => ({ y_output_main: false });
@@ -81,11 +92,11 @@ test('setRelay preserves user relay permission checks', async () => {
 test('setRelay rejects when relay writes are disabled or room mapping is missing', async () => {
   const { service, dependencies } = createRelayService();
   dependencies.config.app.write_relay_enabled = false;
-  await assert.rejects(service.setRelay('201', 'main', 'on'), /functionality is disabled/);
+  await assert.rejects(service.setRelay('201', 'main', 'on', 'admin'), /functionality is disabled/);
 
   dependencies.config.app.write_relay_enabled = true;
   dependencies.config.getRoomMapping = () => undefined;
-  await assert.rejects(service.setRelay('201', 'main', 'on'), /Room 201 not in mapping/);
+  await assert.rejects(service.setRelay('201', 'main', 'on', 'admin'), /Room 201 not in mapping/);
 });
 
 test('setRelay rejects failed writes and does not update local state', async () => {
@@ -95,7 +106,7 @@ test('setRelay rejects failed writes and does not update local state', async () 
     args[3](new Error('PLC write failed'));
   };
 
-  await assert.rejects(service.setRelay('201', 'main', 'off'), /PLC write failed/);
+  await assert.rejects(service.setRelay('201', 'main', 'off', 'admin'), /PLC write failed/);
   assert.deepEqual(calls.coilUpdates, []);
   assert.equal(calls.logs[0][0], 'error');
 });
@@ -103,7 +114,7 @@ test('setRelay rejects failed writes and does not update local state', async () 
 test('turning off main queues sub off when the interlock is enabled', async () => {
   const { service, calls } = createRelayService();
 
-  await service.setRelay('201', 'main', 'off');
+  await service.setRelay('201', 'main', 'off', 'admin');
 
   assert.deepEqual(calls.writes[1].slice(0, 3), [2, 11, false]);
   assert.equal(calls.writes[1].length, 3);
@@ -113,7 +124,7 @@ test('turning off main does not queue sub when the interlock is disabled', async
   const { service, calls, dependencies } = createRelayService();
   dependencies.config.app.interlock_enabled = false;
 
-  await service.setRelay('201', 'main', 'off');
+  await service.setRelay('201', 'main', 'off', 'admin');
 
   assert.equal(calls.writes.length, 1);
 });
@@ -122,7 +133,7 @@ test('setRelay broadcasts only when the persisted relay state changes', async ()
   const { service, calls, dependencies } = createRelayService();
   dependencies.stateManager.updateCoilState = () => false;
 
-  await service.setRelay('201', 'sub', 'on');
+  await service.setRelay('201', 'sub', 'on', 'admin');
 
   assert.equal(calls.stateUpdates, 0);
 });

@@ -1,31 +1,15 @@
-import { randomBytes, scryptSync, timingSafeEqual } from 'node:crypto';
+import bcrypt from 'bcryptjs';
 
-const HASH_ALGORITHM = 'scrypt';
-const SALT_BYTES = 16;
-const KEY_LENGTH = 64;
+const BCRYPT_ROUNDS = 12;
 
-export function hashPassword(password) {
-  const salt = randomBytes(SALT_BYTES).toString('hex');
-  const hash = scryptSync(password, salt, KEY_LENGTH).toString('hex');
-  return `${HASH_ALGORITHM}$${salt}$${hash}`;
+export async function hashPassword(password) {
+  return bcrypt.hash(password, BCRYPT_ROUNDS);
 }
 
-export function isPasswordHashed(value) {
-  return typeof value === 'string' && value.startsWith(`${HASH_ALGORITHM}$`);
-}
-
-export function verifyPassword(password, encodedHash) {
-  if (typeof password !== 'string' || typeof encodedHash !== 'string') return false;
-
-  const [algorithm, salt, storedHash] = encodedHash.split('$');
-  if (algorithm !== HASH_ALGORITHM || !salt || !storedHash) return false;
-
-  try {
-    const storedBuffer = Buffer.from(storedHash, 'hex');
-    const suppliedBuffer = scryptSync(password, salt, storedBuffer.length);
-    return storedBuffer.length === suppliedBuffer.length &&
-      timingSafeEqual(storedBuffer, suppliedBuffer);
-  } catch {
+export async function verifyPassword(password, passwordHash) {
+  if (typeof password !== 'string' || typeof passwordHash !== 'string' ||
+      !/^\$2[aby]\$\d{2}\$/.test(passwordHash)) {
     return false;
   }
+  return bcrypt.compare(password, passwordHash);
 }

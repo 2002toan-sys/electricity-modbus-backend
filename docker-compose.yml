@@ -1,7 +1,7 @@
 services:
   modbus-backend:
     # Image name on Docker Hub
-    image: nguyenvietanh10326/hotel-modbus-backend:v11
+    image: nguyenvietanh10326/hotel-modbus-backend:v11.6
 
     # Allows local building using the Dockerfile in this directory
     build:

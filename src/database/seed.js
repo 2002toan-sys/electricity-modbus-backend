@@ -1,5 +1,4 @@
 import logger from '../utils/logger.js';
-import { hashPassword } from '../utils/password.js';
 
 const DEFAULT_CORS_ORIGINS = [
   'http://localhost:3000',
@@ -86,7 +85,7 @@ function migrateStateNames(db) {
   }
 }
 
-export function seedDatabase(db) {
+export async function seedDatabase(db) {
   const roomCount = db.prepare('SELECT COUNT(*) as count FROM rooms').get().count;
   if (roomCount === 0) logger.info('Seeding database with default initial data...');
 
@@ -192,16 +191,6 @@ export function seedDatabase(db) {
 
     for (const [k, v, cat, desc] of configs) {
       insertConfig.run(k, v, cat, desc);
-    }
-
-    // 4. Seed Users
-    if (roomCount === 0) {
-      const insertUser = db.prepare(`
-        INSERT OR IGNORE INTO users (username, password_hash, role, full_name)
-        VALUES (?, ?, ?, ?)
-      `);
-      insertUser.run('admin12345', hashPassword('admin123'), 'admin', 'Quản trị viên');
-      insertUser.run('user', hashPassword('user123'), 'user', 'Nhân viên lễ tân');
     }
 
   });

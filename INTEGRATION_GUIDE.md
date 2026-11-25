@@ -7,7 +7,7 @@ This system manages hotel room access control via Modbus TCP relay control with 
 ## Features
 
 - ✅ **Dual Authentication**: JWT bearer token (frontend) + API key (third-party)
-- ✅ **Role-based Access Control**: Admin (full control) + User (limited sub relay)
+- ✅ **Role-based Access Control**: Admin (system management) + User (read-only plus guarded sub relay)
 - ✅ **State Transitions**: Automatic state calculation (5 Vietnamese states)
 - ✅ **State History**: SQLite logging with queryable API
 - ✅ **Real-time Notifications**: WebSocket + Telegram + Email
@@ -27,7 +27,10 @@ Login with a username and password to receive a JWT access token.
 ```bash
 curl -X POST http://localhost:3000/api/auth/login \
   -H "Content-Type: application/json" \
-  -d '{"username": "admin", "password": "admin123"}'
+  -H "Origin: http://localhost:3001" \
+  -H "X-CSRF-Protection: 1" \
+  -c cookies.txt \
+  -d '{"username": "<INITIAL_ADMIN_USERNAME>", "password": "<INITIAL_ADMIN_PASSWORD>"}'
 ```
 
 **Response:**
@@ -36,15 +39,22 @@ curl -X POST http://localhost:3000/api/auth/login \
   "success": true,
   "accessToken": "<JWT>",
   "user": {
+    "id": 1,
     "username": "admin",
     "role": "admin"
   }
 }
 ```
 
-**Default users** (created in SQLite on first setup; change the passwords after login):
-- **admin12345** / admin123 (full control)
-- **user** / user123 (limited sub relay only)
+The refresh token is returned only as an `HttpOnly`, `SameSite=Strict` cookie at `/api/auth`.
+The browser must use `credentials: 'include'`; JavaScript cannot read or persist the refresh token.
+Access tokens are held in memory and sent as bearer tokens.
+
+The first startup after this account-reset migration deletes all existing user accounts and
+creates exactly one administrator using `INITIAL_ADMIN_USERNAME` and `INITIAL_ADMIN_PASSWORD`
+from the backend environment. There is no default password or seeded user account. Existing room,
+PLC, settings, and history data are retained. The migration runs once; later restarts and deploys
+do not reset accounts.
 
 ---
 
@@ -62,11 +72,39 @@ curl -X GET http://localhost:3000/api/auth/verify \
 {
   "success": true,
   "user": {
+    "id": 1,
     "username": "admin",
     "role": "admin"
   }
 }
 ```
+
+#### POST /api/auth/refresh
+Rotate the refresh token cookie and receive a new 15-minute access token:
+
+```bash
+curl -X POST http://localhost:3000/api/auth/refresh \
+  -H "Origin: http://localhost:3001" \
+  -H "X-CSRF-Protection: 1" \
+  -b cookies.txt -c cookies.txt
+```
+
+`POST /api/auth/logout` revokes the presented refresh-token family and clears the cookie.
+`POST /api/auth/logout-all` revokes all sessions and requires a bearer token plus the CSRF header.
+`GET /api/auth/me` returns the authenticated user. There is no `/api/auth/activity` token-renewal
+endpoint; all renewal goes through refresh-token rotation.
+
+### Authorization
+
+- Every `/api/*` route is authenticated by default; only the declared login, refresh, and logout
+  endpoints are public. `/api/status` is a public health check.
+- Both roles may read room, PLC, history, and notification data. Users may mark notifications read
+  and control only the sub relay while the main relay is on.
+- Admins may control both relays and manage configuration, users, and global notifications.
+- Updating room state and writing/clearing global notifications is restricted to an admin JWT or
+  an API key configured with the `admin` role. API keys do not administer users or configuration.
+- Room/notification data is shared across this single hotel; there are no per-user room ownership
+  records. Relay checks are enforced server-side, not just by hidden UI controls.
 
 ---
 
@@ -81,7 +119,7 @@ Control main relay using API Key.
 ```bash
 curl -X POST http://localhost:3000/api/relay/main/set \
   -H "Content-Type: application/json" \
-  -H "X-API-Key: your-secret-api-key-here" \
+  -H "X-API-Key: $API_KEY" \
   -d '[
     {"room": "201", "set": "on"},
     {"room": "202", "set": "off"}
@@ -107,7 +145,7 @@ Control sub relay using API Key.
 ```bash
 curl -X POST http://localhost:3000/api/relay/sub/set \
   -H "Content-Type: application/json" \
-  -H "X-API-Key: your-secret-api-key-here" \
+  -H "X-API-Key: $API_KEY" \
   -d '[{"room": "201", "set": "on"}]'
 ```
 
@@ -121,7 +159,7 @@ Send the access token in the `Authorization` header for subsequent API calls:
 # Login and copy accessToken from the response
 curl -X POST http://localhost:3000/api/auth/login \
   -H "Content-Type: application/json" \
-  -d '{"username": "admin", "password": "admin123"}'
+  -d '{"username": "<INITIAL_ADMIN_USERNAME>", "password": "<INITIAL_ADMIN_PASSWORD>"}'
 
 # Use the returned token to call main relay (Admin)
 curl -X POST http://localhost:3000/api/relay/main/set \
@@ -136,10 +174,10 @@ curl -X POST http://localhost:3000/api/relay/sub/set \
   -d '[{"room": "201", "set": "on"}]'
 ```
 
-Access tokens are renewed by `/api/auth/activity` and expire after 24 hours without activity.
-Call `/api/auth/logout` with the bearer token to revoke it immediately. `API_KEY` is optional and
-should be enabled only when a trusted third-party system needs machine-to-machine access. API keys
-do not authenticate user-management or configuration endpoints.
+Access tokens expire after 15 minutes. Refresh tokens rotate on every refresh and expire after
+7 days; only their SHA-256 hashes are stored in SQLite. `API_KEY` is optional and should be
+enabled only for trusted integrations. Account and configuration administration requires an
+admin JWT.
 
 ### Monitoring
 
@@ -155,7 +193,7 @@ curl -X GET "http://localhost:3000/api/monitor/rooms" \
 **Request (third-party - with API Key):**
 ```bash
 curl -X GET "http://localhost:3000/api/monitor/rooms" \
-  -H "X-API-Key: your-secret-api-key-here"
+  -H "X-API-Key: $API_KEY"
 ```
 
 **Response:**
@@ -208,7 +246,7 @@ curl -X GET "http://localhost:3000/api/monitor/plc-status" \
 **Request (third-party - with API Key):**
 ```bash
 curl -X GET "http://localhost:3000/api/monitor/plc-status" \
-  -H "X-API-Key: your-secret-api-key-here"
+  -H "X-API-Key: $API_KEY"
 ```
 
 **Response:**
@@ -259,7 +297,7 @@ curl -G "http://localhost:3000/api/monitor/history" \
 Get all changes in a date range (API Key):
 ```bash
 curl -X GET "http://localhost:3000/api/monitor/history?startDate=2025-12-01T00:00:00Z&endDate=2025-12-02T23:59:59Z" \
-  -H "X-API-Key: your-secret-api-key-here"
+  -H "X-API-Key: $API_KEY"
 ```
 
 **Response:**
@@ -377,7 +415,8 @@ Automatic notification messages when state changes:
 
 ## 5. Frontend Integration Example (Vue.js / React)
 
-**Authentication:** Login to receive an access token and send it as a bearer token with every protected request.
+**Authentication:** Keep the access token in memory, use the HttpOnly refresh cookie, and send the
+CSRF header on cookie-authenticated POST requests.
 
 ```javascript
 let accessToken;
@@ -385,9 +424,28 @@ let accessToken;
 async function login(username, password) {
   const response = await fetch('http://localhost:3000/api/auth/login', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    credentials: 'include',
+    headers: {
+      'Content-Type': 'application/json',
+      'X-CSRF-Protection': '1'
+    },
     body: JSON.stringify({ username, password })
   });
+  const data = await response.json();
+  accessToken = data.accessToken;
+  return data;
+}
+
+async function refreshSession() {
+  const response = await fetch('http://localhost:3000/api/auth/refresh', {
+    method: 'POST',
+    credentials: 'include',
+    headers: { 'X-CSRF-Protection': '1' }
+  });
+  if (!response.ok) {
+    accessToken = null;
+    return null;
+  }
   const data = await response.json();
   accessToken = data.accessToken;
   return data;
@@ -396,6 +454,7 @@ async function login(username, password) {
 // Verify the access token
 async function verifyToken() {
   const response = await fetch('http://localhost:3000/api/auth/verify', {
+    credentials: 'include',
     headers: { Authorization: `Bearer ${accessToken}` }
   });
   return await response.json();
@@ -405,7 +464,11 @@ async function verifyToken() {
 async function logout() {
   const response = await fetch('http://localhost:3000/api/auth/logout', {
     method: 'POST',
-    headers: { Authorization: `Bearer ${accessToken}` }
+    credentials: 'include',
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      'X-CSRF-Protection': '1'
+    }
   });
   accessToken = null;
   return await response.json();
@@ -463,7 +526,7 @@ For external systems (such as PMS integrations), set an optional `API_KEY` in th
 ```bash
 #!/bin/bash
 
-API_KEY="your-secret-api-key-here"
+API_KEY="${API_KEY:?Set API_KEY in the environment first}"
 BASE_URL="http://localhost:3000"
 
 # Check room 201 status
@@ -499,7 +562,7 @@ curl -H "Authorization: Bearer <JWT>" "http://localhost:3000/api/monitor/history
 ### Get history for specific room (API Key)
 ```bash
 curl "http://localhost:3000/api/monitor/history?room=201&limit=20" \
-  -H "X-API-Key: your-secret-api-key-here"
+  -H "X-API-Key: $API_KEY"
 ```
 
 ### Get history with date filter
@@ -523,15 +586,17 @@ curl -H "Authorization: Bearer <JWT>" "http://localhost:3000/api/monitor/history
   "error": "Unauthorized"
 }
 ```
-**Solution:** Call `POST /api/auth/login` again to obtain a new access token.
+**Solution:** Try `POST /api/auth/refresh` with the refresh cookie. Log in again only if the
+refresh token is expired, revoked, or invalid.
 
 ### Insufficient Permissions
 ```json
 {
-  "error": "User can only control sub relay when main relay is ON"
+  "error": "Insufficient permission"
 }
 ```
-**Solution:** Turn on main relay first (admin only)
+**Solution:** Check the role's permissions. A user can control only the sub relay while the main
+relay is on; only an administrator can control the main relay or change system configuration.
 
 ### PLC Connection Error
 ```json
@@ -543,14 +608,97 @@ curl -H "Authorization: Bearer <JWT>" "http://localhost:3000/api/monitor/history
 
 ---
 
-## 9. Configuration
+## 9. Production deployment configuration
 
-### Environment - Auth secrets
+Start from `.env.example` and copy it to `.env` on the production server. The Compose file
+loads `.env`; do not commit it or put real secrets in `.env.example`.
 
-```dotenv
-JWT_SECRET=generate-a-random-secret-at-least-32-characters
-API_KEY=optional-random-secret-for-third-party-integration
+### Required and optional environment variables
+
+| Variable | Production value | Notes |
+|---|---|---|
+| `NODE_ENV` | `production` | Enables production security headers and cookie rules. |
+| `JWT_SECRET` | Unique random value, at least 32 characters | Generate a new value for each environment. Changing it invalidates all access tokens. |
+| `JWT_ISSUER` | `hotel-modbus-system` | Must match the issuer used when creating access tokens. |
+| `JWT_AUDIENCE` | `hotel-modbus-frontend` | Must match the intended client. |
+| `ACCESS_TOKEN_TTL_SECONDS` | `900` or less | Maximum accepted lifetime is 15 minutes. |
+| `INITIAL_ADMIN_USERNAME` | `admin` or another valid username | Used only once by the account-reset migration. Username must be 3-32 letters, numbers, dots, underscores, or hyphens. |
+| `INITIAL_ADMIN_PASSWORD` | Unique password, 12-128 characters | Required for the one-time reset migration. Do not commit it; remove it from `.env` after confirming the first startup and admin login. |
+| `REFRESH_TOKEN_COOKIE_NAME` | `refresh_token` | Keep stable unless intentionally changing the cookie name. |
+| `REFRESH_TOKEN_COOKIE_SECURE` | `true` | Never set to false in production; serve the site over HTTPS. |
+| `API_KEY` | Empty unless needed | Optional integration key; grants admin-level API access and must be at least 32 characters. |
+| `BACKEND_DATA_DIR` | Absolute writable host directory | Persistent SQLite database location mounted at `/app/data`. |
+| `BACKEND_LOGS_DIR` | Absolute writable host directory | Persistent file logs mounted at `/app/logs`. |
+| `LOG_TO_FILE` | `true` or `false` | Console logging remains enabled either way. |
+| `LOG_LEVEL` | `info` | Use `warn` or `error` if less operational detail is needed. |
+
+SQLite uses `data/hotel.db` by default, persisted through the configured backend data volume.
+The app port is managed by the application's system settings (default
+`3000`), not by an environment variable. The production CORS allowlist is managed in Admin
+Settings, not in `.env`; use the exact HTTPS origin(s) of the deployed UI, never `*`.
+
+Generate secrets on the server and paste each output into the corresponding `.env` value:
+
+```bash
+node -e "console.log(require('node:crypto').randomBytes(48).toString('base64url'))"
 ```
+
+Run the command once for `JWT_SECRET`, once for the bootstrap admin password, and again for
+`API_KEY` only when an external system must use API-key authentication. Do not reuse values across
+environments. The bootstrap password output can contain URL-safe characters and should be stored
+only in the production `.env` or a secret manager.
+
+### Deploy with Docker Compose
+
+On the production host, from the directory containing `docker-compose.yml`:
+
+```bash
+cp .env.example .env
+mkdir -p /opt/hotel-modbus/backend/data /opt/hotel-modbus/backend/logs
+sudo chown -R 1000:1000 /opt/hotel-modbus/backend
+chmod 600 .env
+```
+
+Edit `.env`, generate and set the secrets above, then ensure the Compose external network exists:
+
+```bash
+docker network create my_global_network
+```
+
+If Docker reports that the network already exists, continue. To build from the checked-out source:
+
+```bash
+docker compose up -d --build
+```
+
+To deploy the image configured in Compose instead, pull and start it:
+
+```bash
+docker compose pull
+docker compose up -d
+```
+
+Check startup and health:
+
+```bash
+docker compose ps
+docker compose logs --tail=100 modbus-backend
+curl -fsS http://127.0.0.1:3000/api/status
+```
+
+On the first startup after this migration, all existing user accounts are deleted and exactly
+one admin is created from the two `INITIAL_ADMIN_*` values. Back up the database before deploying;
+this reset retains room, PLC, configuration, and history data, but cannot be undone for user
+accounts. After a successful admin login, remove `INITIAL_ADMIN_PASSWORD` from `.env`. The
+migration marker ensures future restarts and deployments retain accounts.
+
+Place the service behind an HTTPS reverse proxy, restrict direct public access to port `3000`,
+and ensure the proxy is the single trusted hop used by Express. After logging in as admin, set the
+exact production UI origin(s) in Admin Settings and verify login, refresh, and logout through HTTPS.
+
+Back up the SQLite database regularly. Because SQLite uses WAL mode, stop the service or use a
+SQLite-aware backup procedure that includes the active WAL state; do not copy only `hotel.db`
+while the application is writing.
 
 ---
 
@@ -563,23 +711,29 @@ API_KEY=optional-random-secret-for-third-party-integration
    - The current configuration uses one shared integration key; rotate it if exposed.
 
 3. **JWT Security**
-   - Use HTTPS in production; browser access tokens are stored in session storage.
-   - Access tokens expire after 24 hours without activity; logout revokes the token in SQLite.
+   - Use HTTPS in production; access tokens remain in memory and refresh tokens are HttpOnly cookies.
+   - Access tokens expire after 15 minutes; refresh tokens rotate and expire after 7 days.
+   - Logout revokes the refresh-token family; logout-all invalidates every session.
 
 4. **HTTPS in Production**
    - Use TLS/SSL certificates
-   - Update CORS origins to specific domains
-   - Enable HSTS headers
+   - Keep the UI and API same-origin, or set exact allowed origins through Admin settings
+   - Enable HSTS headers (enabled in production)
+   - The refresh cookie is Secure in production; do not disable it
 
-5. **User Credentials**
-   - Enforce strong passwords
-   - Consider external auth (OAuth2, LDAP, SSO)
-   - Audit login attempts and set lockout policies
+5. **CSRF and request limits**
+   - Cookie-authenticated POST requests require an allowed Origin and `X-CSRF-Protection: 1`.
+   - JSON request bodies are limited to 10 KB.
 
-6. **Database Security**
-   - Hash passwords with bcrypt
+6. **User Credentials**
+   - Passwords use bcrypt; keep the one-time bootstrap password private and remove it after setup.
+   - Authentication audit events include user ID, IP, and user agent, but never tokens or passwords.
+
+7. **Database Security**
+   - Store password hashes and SHA-256 hashes of refresh tokens only.
    - Use parameterized queries
-   - Encrypt sensitive relay state data
+   - Run the Docker image as the non-root `node` user. Ensure bind-mounted data and log directories
+     are writable by UID 1000 on the host.
 
 ---
 

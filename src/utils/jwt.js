@@ -1,75 +1,71 @@
-import { createHmac, randomUUID, timingSafeEqual } from 'node:crypto';
+import dotenv from 'dotenv';
+import jwt from 'jsonwebtoken';
+import { randomUUID } from 'node:crypto';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { z } from 'zod';
 
-const TOKEN_ISSUER = 'hotel-modbus-system';
-const TOKEN_AUDIENCE = 'hotel-modbus-frontend';
-export const ACCESS_TOKEN_TTL_SECONDS = 24 * 60 * 60;
+const __dirname = dirname(fileURLToPath(import.meta.url));
+dotenv.config({ path: join(__dirname, '../../.env'), quiet: true });
 
-function getSecret() {
-  const secret = process.env.JWT_SECRET;
-  if (!secret || secret.length < 32) {
-    throw new Error('JWT_SECRET must be set to at least 32 characters in the backend .env file');
-  }
-  return secret;
+const jwtConfigSchema = z.object({
+  JWT_SECRET: z.string().min(32),
+  JWT_ISSUER: z.string().min(1),
+  JWT_AUDIENCE: z.string().min(1),
+  ACCESS_TOKEN_TTL_SECONDS: z.coerce.number().int().positive().max(900)
+});
+
+const parsedConfig = jwtConfigSchema.safeParse(process.env);
+if (!parsedConfig.success) {
+  throw new Error('Invalid JWT configuration. Set a JWT_SECRET of at least 32 characters.');
 }
 
-function encodeJson(value) {
-  return Buffer.from(JSON.stringify(value)).toString('base64url');
-}
+const jwtConfig = parsedConfig.data;
+const secret = Buffer.from(jwtConfig.JWT_SECRET, 'utf8');
+export const ACCESS_TOKEN_TTL_SECONDS = jwtConfig.ACCESS_TOKEN_TTL_SECONDS;
+export const randomTokenId = randomUUID;
 
-function sign(input) {
-  return createHmac('sha256', getSecret()).update(input).digest();
-}
-
-export function createAccessToken(username, tokenId = randomUUID(), now = Date.now()) {
+export function createAccessToken(user, tokenId = randomUUID(), now = Date.now()) {
   const issuedAt = Math.floor(now / 1000);
-  const header = encodeJson({ alg: 'HS256', typ: 'JWT' });
-  const payload = encodeJson({
-    sub: username,
+  return jwt.sign({
+    userId: user.id,
+    username: user.username,
+    role: user.role,
+    tv: user.token_version || 0,
     jti: tokenId,
-    iss: TOKEN_ISSUER,
-    aud: TOKEN_AUDIENCE,
-    iat: issuedAt,
-    exp: issuedAt + ACCESS_TOKEN_TTL_SECONDS
+    iss: jwtConfig.JWT_ISSUER,
+    aud: jwtConfig.JWT_AUDIENCE,
+    iat: issuedAt
+  }, secret, {
+    algorithm: 'HS256',
+    expiresIn: ACCESS_TOKEN_TTL_SECONDS,
+    subject: String(user.id)
   });
-  const unsignedToken = `${header}.${payload}`;
-  const signature = sign(unsignedToken).toString('base64url');
-  return `${unsignedToken}.${signature}`;
 }
 
 export function verifyAccessToken(token, now = Date.now()) {
   if (typeof token !== 'string') return null;
 
-  const parts = token.split('.');
-  if (parts.length !== 3) return null;
-
   try {
-    const [encodedHeader, encodedPayload, encodedSignature] = parts;
-    const header = JSON.parse(Buffer.from(encodedHeader, 'base64url').toString('utf8'));
-    const payload = JSON.parse(Buffer.from(encodedPayload, 'base64url').toString('utf8'));
-    if (header.alg !== 'HS256' || header.typ !== 'JWT') return null;
-
-    const expectedSignature = sign(`${encodedHeader}.${encodedPayload}`);
-    const suppliedSignature = Buffer.from(encodedSignature, 'base64url');
-    if (suppliedSignature.length !== expectedSignature.length ||
-        !timingSafeEqual(suppliedSignature, expectedSignature)) {
+    const claims = jwt.verify(token, secret, {
+      algorithms: ['HS256'],
+      issuer: jwtConfig.JWT_ISSUER,
+      audience: jwtConfig.JWT_AUDIENCE,
+      clockTimestamp: Math.floor(now / 1000)
+    });
+    if (!claims || typeof claims !== 'object' ||
+        !Number.isSafeInteger(claims.userId) ||
+        claims.sub !== String(claims.userId) ||
+        typeof claims.username !== 'string' ||
+        !['admin', 'user'].includes(claims.role) ||
+        !Number.isSafeInteger(claims.tv) ||
+        typeof claims.jti !== 'string' ||
+        !Number.isInteger(claims.iat) ||
+        !Number.isInteger(claims.exp)) {
       return null;
     }
-
-    const nowSeconds = Math.floor(now / 1000);
-    if (payload.iss !== TOKEN_ISSUER ||
-        payload.aud !== TOKEN_AUDIENCE ||
-        typeof payload.sub !== 'string' ||
-        typeof payload.jti !== 'string' ||
-        !Number.isInteger(payload.exp) ||
-        payload.exp <= nowSeconds ||
-        !Number.isInteger(payload.iat) ||
-        payload.iat > nowSeconds + 60) {
-      return null;
-    }
-    return { username: payload.sub, tokenId: payload.jti };
+    return claims;
   } catch {
     return null;
   }
 }
-
-export { randomUUID };

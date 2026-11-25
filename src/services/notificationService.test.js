@@ -1,6 +1,10 @@
 import assert from 'node:assert/strict';
-import test from 'node:test';
-import NotificationService from './notificationServiceCore.js';
+import test, { after } from 'node:test';
+import { setupServiceTestDatabase } from '../test/serviceTestSetup.js';
+
+const cleanup = await setupServiceTestDatabase();
+const { NotificationService } = await import('./notificationService.js');
+after(cleanup);
 
 const createNotificationService = (configOverrides = {}) => {
   const calls = { saved: [], events: [], telegram: [], email: [], timers: [], logs: [] };

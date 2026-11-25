@@ -7,14 +7,14 @@ import { fileURLToPath } from 'url';
 const __dirname = dirname(fileURLToPath(import.meta.url));
 dotenv.config({ path: join(__dirname, '../../.env'), quiet: true });
 
-const logToFile = (process.env.LOG_TO_FILE || 'true').toLowerCase();
+const logToFile = process.env.LOG_TO_FILE?.toLowerCase();
 if (logToFile !== 'true' && logToFile !== 'false') {
-  throw new Error('LOG_TO_FILE must be either true or false');
+  throw new Error('LOG_TO_FILE must be set to either true or false');
 }
 
-const logLevel = process.env.LOG_LEVEL || 'info';
+const logLevel = process.env.LOG_LEVEL;
 if (winston.config.npm.levels[logLevel] === undefined) {
-  throw new Error(`Invalid LOG_LEVEL: ${logLevel}`);
+  throw new Error(`LOG_LEVEL must be set to a valid Winston level; received: ${logLevel}`);
 }
 
 const transports = [new winston.transports.Console()];

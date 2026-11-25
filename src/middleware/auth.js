@@ -2,6 +2,7 @@ import { timingSafeEqual } from 'node:crypto';
 import logger from '../utils/logger.js';
 import config from '../utils/configLoader.js';
 import authService from '../services/authService.js';
+export { requireAdmin, requirePermission } from './authorization.js';
 
 function isMatchingApiKey(candidate, configured) {
   if (typeof candidate !== 'string' || typeof configured !== 'string') return false;
@@ -71,16 +72,23 @@ export const authenticate = (req, res, next) => {
   return res.status(401).json({ error: 'Unauthorized or token expired' });
 };
 
-export const requireJwt = (req, res, next) => {
-  if (req.authType !== 'jwt') {
-    return res.status(401).json({ error: 'JWT authentication required' });
+export const authenticateOptional = (req, res, next) => {
+  const authorization = req.headers.authorization || '';
+  const tokenMatch = authorization.match(/^Bearer\s+(.+)$/i);
+  if (!tokenMatch) return next();
+
+  const authentication = authService.authenticateToken(tokenMatch[1], { updateActivity: false });
+  if (authentication) {
+    req.user = authentication.user;
+    req.authTokenId = authentication.tokenId;
+    req.authType = 'jwt';
   }
   return next();
 };
 
-export const requireAdmin = (req, res, next) => {
-  if (req.user?.role !== 'admin' || req.authType !== 'jwt') {
-    return res.status(403).json({ error: 'Admin role required' });
+export const requireJwt = (req, res, next) => {
+  if (req.authType !== 'jwt') {
+    return res.status(401).json({ error: 'JWT authentication required' });
   }
   return next();
 };

@@ -1,6 +1,10 @@
 import assert from 'node:assert/strict';
-import test from 'node:test';
-import StateManager from './stateManagerCore.js';
+import test, { after } from 'node:test';
+import { setupServiceTestDatabase } from '../test/serviceTestSetup.js';
+
+const cleanup = await setupServiceTestDatabase();
+const { StateManager } = await import('./stateManager.js');
+after(cleanup);
 
 const createStateManager = (initialRows = []) => {
   const calls = { roomUpdates: [], mainCoilUpdates: [], subCoilUpdates: [], histories: [], notifications: [], logs: [] };

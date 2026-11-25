@@ -1,86 +1,145 @@
+import { parseCookie, stringifySetCookie } from 'cookie';
+import { z } from 'zod';
 import logger from '../utils/logger.js';
 import authService from '../services/authService.js';
+import { refreshCookieConfig } from '../middleware/csrf.js';
+import { logAuthAudit } from '../utils/authAudit.js';
 
-/**
- * Login handler: authenticate user and return JWT token
- */
+const REFRESH_TOKEN_TTL_SECONDS = 7 * 24 * 60 * 60;
+
+const loginSchema = z.object({
+  username: z.string().trim().min(1).max(32),
+  password: z.string().min(1).max(128)
+});
+
+function requestContext(req) {
+  return {
+    ip: req.ip,
+    userAgent: req.get('user-agent') || null
+  };
+}
+
+function getRefreshToken(req) {
+  return parseCookie(req.headers.cookie || '')[refreshCookieConfig.name];
+}
+
+function setRefreshCookie(res, token) {
+  res.append('Set-Cookie', stringifySetCookie({
+    name: refreshCookieConfig.name,
+    value: token,
+    httpOnly: true,
+    secure: refreshCookieConfig.secure,
+    sameSite: refreshCookieConfig.sameSite,
+    path: refreshCookieConfig.path,
+    maxAge: REFRESH_TOKEN_TTL_SECONDS
+  }));
+}
+
+function clearRefreshCookie(res) {
+  res.append('Set-Cookie', stringifySetCookie({
+    name: refreshCookieConfig.name,
+    value: '',
+    httpOnly: true,
+    secure: refreshCookieConfig.secure,
+    sameSite: refreshCookieConfig.sameSite,
+    path: refreshCookieConfig.path,
+    maxAge: 0
+  }));
+}
+
+function respondWithSession(res, session, status = 200) {
+  setRefreshCookie(res, session.refreshToken);
+  return res.status(status).json({
+    success: true,
+    accessToken: session.accessToken,
+    user: session.user
+  });
+}
+
 export async function login(req, res) {
+  const parsed = loginSchema.safeParse(req.body || {});
+  if (!parsed.success) {
+    return res.status(400).json({ error: 'Username and password are required' });
+  }
+
   try {
-    const { username, password } = req.body || {};
-
-    if (typeof username !== 'string' || !username ||
-        typeof password !== 'string' || !password) {
-      return res.status(400).json({ error: 'Username and password required' });
-    }
-
-    const user = authService.getUserForLogin(username);
-
-    if (!user || !authService.verifyCredentials(password, user.password_hash)) {
-      logger.warn(`Login failed for user: ${username}`);
+    const session = await authService.login(
+      parsed.data.username,
+      parsed.data.password,
+      requestContext(req)
+    );
+    if (session.status !== 'ok') {
+      logAuthAudit('auth.login.failed', { req, userId: session.userId });
       return res.status(401).json({ error: 'Invalid credentials' });
     }
 
-    const accessToken = authService.createToken(user.username);
-    logger.info(`User logged in with 24-hour JWT idle timeout: ${username} (role: ${user.role})`);
-    return res.status(200).json({
-      success: true,
-      accessToken,
-      user: { username: user.username, role: user.role }
-    });
+    logAuthAudit('auth.login.succeeded', { req, userId: session.user.id });
+    return respondWithSession(res, session);
   } catch (error) {
-    logger.error(`Login error: ${error.message}`);
-    res.status(500).json({ error: error.message });
+    logger.error(`Authentication failed from ${req.ip}: ${error.message}`);
+    return res.status(500).json({ error: 'Unable to log in' });
   }
 }
 
-/**
- * Verify token endpoint
- */
-export async function verifyToken(req, res) {
+export async function refresh(req, res) {
   try {
-    const user = req.user;
-    if (!user) return res.status(401).json({ error: 'Not authenticated' });
-    res.status(200).json({ success: true, user });
+    const session = authService.rotateRefreshToken(getRefreshToken(req), requestContext(req));
+    if (session.status !== 'ok') {
+      logAuthAudit(
+        session.status === 'reuse' ? 'auth.refresh.reuse_detected' : 'auth.refresh.failed',
+        { req, userId: session.userId }
+      );
+      clearRefreshCookie(res);
+      return res.status(401).json({ error: 'Invalid refresh token' });
+    }
+    logAuthAudit('auth.refresh.succeeded', { req, userId: session.user.id });
+    return respondWithSession(res, session);
   } catch (error) {
-    logger.error(`JWT verify error: ${error.message}`);
-    res.status(500).json({ error: error.message });
+    logger.error(`Token refresh failed from ${req.ip}: ${error.message}`);
+    return res.status(500).json({ error: 'Unable to refresh session' });
   }
 }
 
-export function recordActivity(req, res) {
-  const accessToken = authService.refreshToken(req.authTokenId, req.user.username);
-  if (!accessToken) return res.status(401).json({ error: 'Unauthorized' });
-  return res.status(200).json({ success: true, accessToken });
+export function verifyToken(req, res) {
+  return res.status(200).json({ success: true, user: req.user });
 }
 
 export async function changePassword(req, res) {
+  const passwordSchema = z.object({
+    currentPassword: z.string().min(1).max(128),
+    newPassword: z.string().min(8).max(128)
+  });
+  const parsed = passwordSchema.safeParse(req.body || {});
+  if (!parsed.success) {
+    return res.status(400).json({ error: 'Current and new password are required' });
+  }
+
   try {
-    const { currentPassword, newPassword } = req.body || {};
-    if (typeof currentPassword !== 'string' || typeof newPassword !== 'string') {
-      return res.status(400).json({ error: 'Current and new password are required' });
-    }
-    if (newPassword.length < 8 || newPassword.length > 128) {
-      return res.status(400).json({ error: 'New password must be between 8 and 128 characters' });
-    }
-
-    if (!authService.changePassword(req.user.username, currentPassword, newPassword, req.authTokenId)) {
-      return res.status(400).json({ error: 'Current password is incorrect' });
-    }
-
-    logger.info(`Password changed for user: ${req.user.username}`);
+    const changed = await authService.changePassword(
+      req.user.username,
+      parsed.data.currentPassword,
+      parsed.data.newPassword
+    );
+    if (!changed) return res.status(400).json({ error: 'Current password is incorrect' });
+    logAuthAudit('auth.password.changed', { req, userId: req.user.id });
+    clearRefreshCookie(res);
     return res.status(200).json({ success: true });
   } catch (error) {
-    logger.error(`Change password error: ${error.message}`);
+    logger.error(`Password update failed for user ${req.user.id}: ${error.message}`);
     return res.status(500).json({ error: 'Unable to change password' });
   }
 }
 
-export async function logout(req, res) {
-  try {
-    authService.revokeToken(req.authTokenId);
-    return res.status(200).json({ success: true });
-  } catch (error) {
-    logger.error(`Logout error: ${error.message}`);
-    res.status(500).json({ error: error.message });
-  }
+export function logout(req, res) {
+  const userId = authService.logout(req.user?.id, req.authTokenId, getRefreshToken(req));
+  logAuthAudit('auth.logout', { req, userId });
+  clearRefreshCookie(res);
+  return res.status(200).json({ success: true });
+}
+
+export function logoutAll(req, res) {
+  authService.logoutAll(req.user.id);
+  logAuthAudit('auth.logout_all', { req, userId: req.user.id });
+  clearRefreshCookie(res);
+  return res.status(200).json({ success: true });
 }

@@ -97,6 +97,21 @@ export const getStateHistory = (req, res) => {
     if (typeof search === 'string' && search.length > 100) {
       return res.status(400).json({ error: 'Search query cannot exceed 100 characters' });
     }
+    const isValidDate = (value) => {
+      if (typeof value !== 'string') return false;
+      const datePart = value.slice(0, 10);
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(datePart)) return false;
+      const parsedDate = new Date(`${datePart}T00:00:00.000Z`);
+      return !Number.isNaN(parsedDate.getTime()) &&
+        parsedDate.toISOString().slice(0, 10) === datePart &&
+        (value.length === 10 || !Number.isNaN(Date.parse(value)));
+    };
+    if ((startDate && !isValidDate(startDate)) || (endDate && !isValidDate(endDate))) {
+      return res.status(400).json({ error: 'Invalid history date filter' });
+    }
+    if (startDate && endDate && startDate.slice(0, 10) > endDate.slice(0, 10)) {
+      return res.status(400).json({ error: 'Start date must not be after end date' });
+    }
 
     const result = historyLogger.getHistory({
       room,

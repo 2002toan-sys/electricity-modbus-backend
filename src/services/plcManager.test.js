@@ -1,7 +1,11 @@
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
-import test from 'node:test';
-import PLCManager from './plcManagerCore.js';
+import test, { after } from 'node:test';
+import { setupServiceTestDatabase } from '../test/serviceTestSetup.js';
+
+const cleanup = await setupServiceTestDatabase();
+const { PLCManager } = await import('./plcManager.js');
+after(cleanup);
 
 class FakeSocket extends EventEmitter {
   constructor() {

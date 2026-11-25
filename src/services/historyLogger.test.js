@@ -1,6 +1,11 @@
 import assert from 'node:assert/strict';
-import test from 'node:test';
-import HistoryLogger from './historyLoggerCore.js';
+import Database from 'better-sqlite3';
+import test, { after } from 'node:test';
+import { setupServiceTestDatabase } from '../test/serviceTestSetup.js';
+
+const cleanup = await setupServiceTestDatabase();
+const { HistoryLogger } = await import('./historyLogger.js');
+after(cleanup);
 
 const createHistoryLogger = (overrides = {}) => {
   const calls = { prepared: [], inserted: [], queryParams: [], loggedErrors: [] };
@@ -58,15 +63,62 @@ test('getHistory retains filtering, search, pagination, and response shape', () 
   });
   assert.deepEqual(calls.queryParams[0], [
     '201',
-    '2026-01-01T00:00:00.000Z',
-    '2026-01-31T00:00:00.000Z',
+    '2026-01-01',
+    '2026-01-31',
     'Có khách',
     'guest',
     '201'
   ]);
   assert.deepEqual(calls.queryParams[1].slice(-2), [1, 1]);
+  assert.match(calls.prepared[1], /date\(timestamp, '\+7 hours'\) >= date\(\?\)/);
+  assert.match(calls.prepared[1], /date\(timestamp, '\+7 hours'\) <= date\(\?\)/);
   assert.match(calls.prepared[1], /room_number = \?/);
   assert.match(calls.prepared[1], /instr\(lower/);
+});
+
+test('getHistory includes a same-day range in Vietnam time and sorts newest first', () => {
+  const db = new Database(':memory:');
+  db.exec(`
+    CREATE TABLE room_history (
+      id INTEGER PRIMARY KEY,
+      timestamp TEXT NOT NULL,
+      room_number TEXT,
+      floor INTEGER,
+      previous_state TEXT,
+      new_state TEXT,
+      message TEXT,
+      trigger_source TEXT
+    )
+  `);
+  db.prepare(`
+    INSERT INTO room_history (timestamp, room_number, new_state)
+    VALUES (?, ?, ?)
+  `).run('2026-01-31T16:59:59.999Z', '201', 'Có khách');
+  db.prepare(`
+    INSERT INTO room_history (timestamp, room_number, new_state)
+    VALUES (?, ?, ?)
+  `).run('2026-01-31 16:00:00', '201', 'Trống');
+  db.prepare(`
+    INSERT INTO room_history (timestamp, room_number, new_state)
+    VALUES (?, ?, ?)
+  `).run('2026-01-31T17:00:00.000Z', '201', 'Trống');
+
+  const history = new HistoryLogger({
+    db,
+    logger: { debug: () => {}, error: (message) => assert.fail(message) }
+  });
+  const result = history.getHistory({
+    startDate: '2026-01-31',
+    endDate: '2026-01-31',
+    limit: 10
+  });
+
+  assert.equal(result.records.length, 2);
+  assert.deepEqual(result.records.map(({ timestamp }) => timestamp), [
+    '2026-01-31T16:59:59.999Z',
+    '2026-01-31 16:00:00'
+  ]);
+  db.close();
 });
 
 test('getHistory preserves legacy room/limit form and clamps page limits', () => {

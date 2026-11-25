@@ -1,6 +1,10 @@
 import assert from 'node:assert/strict';
-import test from 'node:test';
-import CommandQueue from './commandQueueCore.js';
+import test, { after } from 'node:test';
+import { setupServiceTestDatabase } from '../test/serviceTestSetup.js';
+
+const cleanup = await setupServiceTestDatabase();
+const { CommandQueue } = await import('./commandQueue.js');
+after(cleanup);
 
 const createQueue = (overrides = {}) => {
   const calls = { writes: [], logs: [] };

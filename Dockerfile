@@ -22,11 +22,15 @@ FROM node:22-alpine AS production
 WORKDIR /app
 
 # Copy installed node_modules from deps stage
-COPY --from=deps /app/node_modules ./node_modules
+COPY --chown=node:node --from=deps /app/node_modules ./node_modules
 
 # Copy application source
-COPY package*.json ./
-COPY src ./src
+COPY --chown=node:node package*.json ./
+COPY --chown=node:node src ./src
+
+# Persisted data and logs need to be writable by the non-root runtime user.
+RUN mkdir -p /app/data /app/logs && chown -R node:node /app/data /app/logs
+USER node
 
 # Expose port
 EXPOSE 3000

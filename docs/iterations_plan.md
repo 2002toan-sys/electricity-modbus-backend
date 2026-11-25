@@ -110,7 +110,7 @@
 ### ⚪ Iteration 6: Bảo mật, Biến môi trường & Tối ưu WebSocket
 * **Mục tiêu**: Hoàn thiện dự án chuẩn production, bảo mật thông tin nhạy cảm và tối ưu băng thông.
 * **Chi tiết kỹ thuật**:
-  - Quản lý tài khoản: đăng nhập và đổi mật khẩu dùng bảng `users`; mật khẩu lưu bằng hash scrypt, dữ liệu mật khẩu cũ được chuyển đổi khi backend khởi động. Sau khi xác nhận chuyển đổi, xóa khai báo user/mật khẩu legacy khỏi `src/config/appsettings.json`.
+  - Quản lý tài khoản: đăng nhập và đổi mật khẩu dùng bảng `users`; mật khẩu được hash bằng bcrypt. Migration tài khoản một lần xóa user cũ và tạo duy nhất admin từ `INITIAL_ADMIN_USERNAME`/`INITIAL_ADMIN_PASSWORD`; không lưu mật khẩu mẫu trong source.
   - API đổi mật khẩu cho người dùng đã đăng nhập và API CRUD user chỉ dành cho Admin; bảo vệ tài khoản Admin cuối cùng và không cho tự xóa/tự đổi vai trò.
   - Frontend bổ sung trang đổi mật khẩu và tab quản lý người dùng, không trả password hash về giao diện.
   - Đã chuyển secret xác thực và API Key mặc định sang file `.env` (dùng thư viện `dotenv`); `.env` phải được giữ ngoài Git.

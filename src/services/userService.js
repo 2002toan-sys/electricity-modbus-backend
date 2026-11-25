@@ -1,7 +1,7 @@
 import db from '../database/db.js';
 import { hashPassword } from '../utils/password.js';
 
-const publicUserFields = 'id, username, role, full_name, created_at';
+const publicUserFields = 'id, username, role, full_name, status, created_at, updated_at';
 const USERNAME_PATTERN = /^[A-Za-z0-9._-]{3,32}$/;
 
 class UserServiceError extends Error {
@@ -11,7 +11,10 @@ class UserServiceError extends Error {
   }
 }
 
-function validateUser({ username, role, full_name: fullName }, { requirePassword, password } = {}) {
+function validateUser(
+  { username, role, status = 'active', full_name: fullName },
+  { requirePassword, password } = {}
+) {
   if (typeof username !== 'string' || !USERNAME_PATTERN.test(username)) {
     throw new UserServiceError(
       'Username must be 3-32 characters and contain only letters, numbers, dots, underscores, or hyphens',
@@ -20,6 +23,9 @@ function validateUser({ username, role, full_name: fullName }, { requirePassword
   }
   if (role !== 'admin' && role !== 'user') {
     throw new UserServiceError('Role must be admin or user', 400);
+  }
+  if (!['active', 'disabled'].includes(status)) {
+    throw new UserServiceError('Status must be active or disabled', 400);
   }
   if (fullName != null && (typeof fullName !== 'string' || fullName.trim().length > 100)) {
     throw new UserServiceError('Full name must be at most 100 characters', 400);
@@ -39,12 +45,13 @@ class UserService {
     `).all();
   }
 
-  createUser({ username, role, fullName, password }) {
-    validateUser({ username, role, full_name: fullName }, { requirePassword: true, password });
+  async createUser({ username, role, status = 'active', fullName, password }) {
+    validateUser({ username, role, status, full_name: fullName }, { requirePassword: true, password });
+    const passwordHash = await hashPassword(password);
     const result = db.prepare(`
-      INSERT INTO users (username, password_hash, role, full_name)
-      VALUES (?, ?, ?, ?)
-    `).run(username.trim(), hashPassword(password), role, fullName?.trim() || null);
+      INSERT INTO users (username, password_hash, role, status, full_name)
+      VALUES (?, ?, ?, ?, ?)
+    `).run(username.trim(), passwordHash, role, status, fullName?.trim() || null);
     return this.getUserById(result.lastInsertRowid);
   }
 
@@ -55,41 +62,54 @@ class UserService {
   }
 
   getUserIdentityById(id) {
-    return db.prepare('SELECT id, username, role FROM users WHERE id = ?').get(id);
+    return db.prepare('SELECT id, username, role, status FROM users WHERE id = ?').get(id);
   }
 
   countAdmins() {
     return db.prepare("SELECT COUNT(*) AS count FROM users WHERE role = 'admin'").get().count;
   }
 
-  updateUser(id, { username, role, fullName, password }) {
+  async updateUser(id, { username, role, status, fullName, password }) {
     const existing = this.getUserIdentityById(id);
     if (!existing) throw new UserServiceError('User not found', 404);
-    validateUser({ username, role, full_name: fullName }, { password });
+    const updatedStatus = status ?? existing.status;
+    validateUser({ username, role, status: updatedStatus, full_name: fullName }, { password });
     if (password !== undefined && password !== '' &&
         (typeof password !== 'string' || password.length < 8 || password.length > 128)) {
       throw new UserServiceError('Password must be between 8 and 128 characters', 400);
     }
+    const passwordHash = password ? await hashPassword(password) : null;
+    const invalidateSessions = existing.username !== username.trim() ||
+      existing.role !== role ||
+      existing.status !== updatedStatus ||
+      Boolean(password);
     const updateUser = db.transaction(() => {
-      if (existing.username !== username.trim() || password) {
+      if (invalidateSessions) {
         db.prepare(`
           UPDATE auth_tokens SET revoked_at = CURRENT_TIMESTAMP
           WHERE username = ? AND revoked_at IS NULL
         `).run(existing.username);
-      }
-      if (password) {
         db.prepare(`
-          UPDATE users
-          SET username = ?, role = ?, full_name = ?, password_hash = ?
-          WHERE id = ?
-        `).run(username.trim(), role, fullName?.trim() || null, hashPassword(password), id);
-      } else {
-        db.prepare(`
-          UPDATE users
-          SET username = ?, role = ?, full_name = ?
-          WHERE id = ?
-        `).run(username.trim(), role, fullName?.trim() || null, id);
+          UPDATE refresh_tokens SET revoked_at = COALESCE(revoked_at, ?)
+          WHERE user_id = ?
+        `).run(Date.now(), id);
       }
+      db.prepare(`
+        UPDATE users
+        SET username = ?, role = ?, status = ?, full_name = ?,
+            password_hash = COALESCE(?, password_hash),
+            token_version = token_version + ?,
+            updated_at = CURRENT_TIMESTAMP
+        WHERE id = ?
+      `).run(
+        username.trim(),
+        role,
+        updatedStatus,
+        fullName?.trim() || null,
+        passwordHash,
+        invalidateSessions ? 1 : 0,
+        id
+      );
     });
     updateUser();
     return this.getUserById(id);
@@ -111,6 +131,7 @@ class UserService {
     return this.updateUser(id, {
       username: data.username,
       role: data.role,
+      status: data.status ?? existing.status,
       fullName: data.full_name,
       password: data.password
     });

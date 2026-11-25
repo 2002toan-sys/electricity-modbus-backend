@@ -1,168 +1,62 @@
 #!/usr/bin/env node
 
-/**
- * Test client for Hotel Modbus System
- * Tests all authentication methods and APIs
- */
+const BASE_URL = process.env.BASE_URL || 'http://localhost:3000';
+const ADMIN_USERNAME = process.env.ADMIN_USERNAME;
+const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD;
+const API_KEY = process.env.API_KEY;
+const ORIGIN = process.env.FRONTEND_ORIGIN || 'http://localhost:3001';
 
-const BASE_URL = 'http://localhost:3000';
-const API_KEY = 'your-secret-api-key-here';
-
-async function test(name, fn) {
-  try {
-    console.log(`\n📝 Testing: ${name}`);
-    await fn();
-    console.log(`✅ PASSED: ${name}`);
-  } catch (error) {
-    console.error(`❌ FAILED: ${name}`);
-    console.error(error.message);
-  }
-}
-
-async function request(method, path, body = null, headers = {}) {
-  const options = {
-    method,
-    headers: {
-      'Content-Type': 'application/json',
-      ...headers
-    }
+async function request(method, path, { body, token, apiKey } = {}) {
+  const headers = {
+    Origin: ORIGIN,
+    'Content-Type': 'application/json'
   };
+  if (method !== 'GET') headers['X-CSRF-Protection'] = '1';
+  if (token) headers.Authorization = `Bearer ${token}`;
+  if (apiKey) headers['X-API-Key'] = apiKey;
 
-  if (body) {
-    options.body = JSON.stringify(body);
-  }
-
-  const response = await fetch(`${BASE_URL}${path}`, options);
+  const response = await fetch(`${BASE_URL}${path}`, {
+    method,
+    headers,
+    ...(body === undefined ? {} : { body: JSON.stringify(body) })
+  });
   const data = await response.json();
-
-  if (!response.ok) {
-    throw new Error(`${response.status}: ${data.error}`);
-  }
-
+  if (!response.ok) throw new Error(`${method} ${path}: ${response.status} ${data.error || ''}`);
   return data;
 }
 
-async function runTests() {
-  console.log('🚀 Hotel Modbus System - API Test Suite\n');
+async function main() {
+  if (!ADMIN_USERNAME || !ADMIN_PASSWORD) {
+    throw new Error('Set ADMIN_USERNAME and ADMIN_PASSWORD to the configured admin credentials.');
+  }
 
-  // Test 1: Login as Admin
-  let adminToken = null;
-  await test('Login as admin', async () => {
-    const response = await request('POST', '/api/auth/login', {
-      username: 'admin',
-      password: 'admin123'
-    });
-    adminToken = response.token;
-    if (!response.token) throw new Error('No token returned');
-    console.log(`   Token: ${response.token.substring(0, 20)}...`);
+  const login = await request('POST', '/api/auth/login', {
+    body: { username: ADMIN_USERNAME, password: ADMIN_PASSWORD }
   });
+  const token = login.accessToken;
+  if (!token) throw new Error('Login response did not contain an access token.');
+  console.log(`Admin login successful: ${login.user.username}`);
 
-  // Test 2: Login as User
-  let userToken = null;
-  await test('Login as user', async () => {
-    const response = await request('POST', '/api/auth/login', {
-      username: 'user',
-      password: 'user123'
-    });
-    userToken = response.token;
-    if (!response.token) throw new Error('No token returned');
-    console.log(`   Token: ${response.token.substring(0, 20)}...`);
-  });
+  const currentUser = await request('GET', '/api/auth/me', { token });
+  if (currentUser.user.role !== 'admin') throw new Error('Configured account is not an admin.');
+  console.log('Authenticated user endpoint successful.');
 
-  // Test 3: Verify Admin Token
-  await test('Verify admin token', async () => {
-    const response = await request('GET', '/api/auth/verify', null, {
-      'Authorization': `Bearer ${adminToken}`
-    });
-    if (response.user.role !== 'admin') throw new Error('Wrong role');
-    console.log(`   User: ${response.user.username} (${response.user.role})`);
-  });
+  const rooms = await request('GET', '/api/monitor/rooms', { token });
+  console.log(`Room status endpoint successful: ${Object.keys(rooms.data || {}).length} rooms.`);
 
-  // Test 4: Get Room States with Admin Token
-  await test('Get room states (JWT)', async () => {
-    const response = await request('GET', '/api/monitor/rooms', null, {
-      'Authorization': `Bearer ${adminToken}`
-    });
-    const rooms = Object.keys(response.data);
-    console.log(`   Found ${rooms.length} rooms: ${rooms.join(', ')}`);
-  });
+  const plcStatus = await request('GET', '/api/monitor/plc-status', { token });
+  console.log(`PLC status endpoint successful: ${(plcStatus.data || []).length} PLCs.`);
 
-  // Test 5: Get Room States with API Key
-  await test('Get room states (API Key)', async () => {
-    const response = await request('GET', '/api/monitor/rooms', null, {
-      'X-API-Key': API_KEY
-    });
-    const rooms = Object.keys(response.data);
-    console.log(`   Found ${rooms.length} rooms`);
-  });
+  const history = await request('GET', '/api/monitor/history?limit=10', { token });
+  console.log(`History endpoint successful: ${(history.data || []).length} records returned.`);
 
-  // Test 6: Get PLC Status
-  await test('Get PLC status', async () => {
-    const response = await request('GET', '/api/monitor/plc-status', null, {
-      'Authorization': `Bearer ${adminToken}`
-    });
-    console.log(`   PLCs: ${response.data.map(p => `Floor ${p.floor} (${p.status})`).join(', ')}`);
-  });
-
-  // Test 7: Set Main Relay with API Key
-  await test('Set main relay (API Key)', async () => {
-    const response = await request('POST', '/api/relay/main/set',
-      [{ room: '201', set: 'on' }],
-      { 'X-API-Key': API_KEY }
-    );
-    console.log(`   Room 201: ${response[0].status}`);
-  });
-
-  // Test 8: Set Main Relay with Admin JWT
-  await test('Set main relay (Admin JWT)', async () => {
-    const response = await request('POST', '/api/relay/main/set/jwt',
-      [{ room: '202', set: 'on' }],
-      { 'Authorization': `Bearer ${adminToken}` }
-    );
-    console.log(`   Room 202: ${response[0].status}`);
-  });
-
-  // Test 9: User tries to control main relay (should fail)
-  await test('User cannot control main relay (should fail)', async () => {
-    try {
-      await request('POST', '/api/relay/main/set/jwt',
-        [{ room: '201', set: 'on' }],
-        { 'Authorization': `Bearer ${userToken}` }
-      );
-      throw new Error('Should have been denied');
-    } catch (error) {
-      if (error.message.includes('403')) {
-        console.log(`   ✓ Correctly denied with 403`);
-      } else {
-        throw error;
-      }
-    }
-  });
-
-  // Test 10: Get State History
-  await test('Get state history', async () => {
-    const response = await request('GET', '/api/monitor/history?limit=10', null, {
-      'Authorization': `Bearer ${adminToken}`
-    });
-    console.log(`   Found ${response.data.length} history records`);
-    if (response.data.length > 0) {
-      console.log(`   Latest: ${response.data[0].room} ${response.data[0].previous_state} → ${response.data[0].new_state}`);
-    }
-  });
-
-  // Test 11: Get History for Specific Room
-  await test('Get history for room 201', async () => {
-    const response = await request('GET', '/api/monitor/history?room=201&limit=5', null, {
-      'Authorization': `Bearer ${adminToken}`
-    });
-    console.log(`   Found ${response.data.length} records for room 201`);
-  });
-
-  console.log('\n✨ All tests completed!\n');
+  if (API_KEY) {
+    await request('GET', '/api/monitor/rooms', { apiKey: API_KEY });
+    console.log('Configured API key endpoint successful.');
+  }
 }
 
-// Run tests
-runTests().catch(error => {
-  console.error('Test suite failed:', error);
-  process.exit(1);
+main().catch((error) => {
+  console.error(`API checks failed: ${error.message}`);
+  process.exitCode = 1;
 });

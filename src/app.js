@@ -7,6 +7,7 @@ import db from './database/db.js';
 import routes from './routes/index.js';
 import { limiter } from './middleware/rateLimit.js';
 import { errorHandler } from './middleware/errorHandler.js';
+import { corsOrigin } from './middleware/corsPolicy.js';
 import plcManager from './services/plcManager.js';
 import monitorService from './services/monitorService.js';
 import commandQueue from './services/commandQueue.js';
@@ -18,29 +19,21 @@ import authService from './services/authService.js';
 const app = express();
 
 app.set('trust proxy', 1);
+app.disable('x-powered-by');
 
 // Security headers
-app.use(helmet());
+app.use(helmet({
+  strictTransportSecurity: process.env.NODE_ENV === 'production'
+    ? { maxAge: 31_536_000, includeSubDomains: true }
+    : false
+}));
 
 // CORS middleware - allow configured frontend origins.
 app.use(cors({
-  origin: (origin, callback) => {
-    // Allow requests with no origin (like mobile apps or curl requests)
-    if (!origin) return callback(null, true);
-
-    const isLocal = /^(http|https):\/\/(localhost|127\.0\.0\.1|192\.168\.\d+\.\d+|10\.\d+\.\d+\.\d+|172\.(1[6-9]|2\d|3[0-1])\.\d+\.\d+)(:\d+)?$/.test(origin);
-    const isConfigured = config.app?.frontend_url && origin.startsWith(config.app.frontend_url);
-    const allowedOrigins = config.app?.cors_origins || [];
-    const isAllowedOrigin = allowedOrigins.includes(origin);
-
-    if (isLocal || isConfigured || isAllowedOrigin) {
-      callback(null, true);
-    } else {
-      callback(null, false); // Block CORS
-    }
-  },
+  origin: corsOrigin,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization', 'X-API-Key']
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-API-Key', 'X-CSRF-Protection'],
+  credentials: true
 }));
 
 const httpServer = createServer(app);
@@ -52,19 +45,21 @@ httpServer.headersTimeout = httpServer.keepAliveTimeout + 1000;
 const io = new Server(httpServer, {
   path: '/socket.io/',
   cors: {
-    origin: true,
-    methods: ['GET', 'POST']
+    origin: corsOrigin,
+    methods: ['GET', 'POST'],
+    credentials: true
   }
 });
 
-app.use(express.json());
+app.use(express.json({ limit: '10kb' }));
 app.use(limiter);
-app.use(routes);
 
-// Healthcheck endpoint
+// Public healthcheck endpoint used by the container health probe.
 app.get('/api/status', (req, res) => {
   res.status(200).json({ status: 'ok', timestamp: new Date().toISOString() });
 });
+
+app.use(routes);
 
 // JSON parse error handler
 app.use((err, req, res, next) => {
